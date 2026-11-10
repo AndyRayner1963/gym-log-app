@@ -1,0 +1,966 @@
+// App tests: BRIEF.md section 10.3 (App 1–14), plus the session-file contract and a few extras.
+// Run from the repository root:  node --test tests/app/
+const { test, after } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const H = require('./helpers');
+const { FakeGitHub, SETUP, T0 } = H;
+
+after(() => H.closeEnv());
+
+const clone = x => JSON.parse(JSON.stringify(x));
+const norm = s => s.replace(/\s+/g, ' ').trim();
+
+/** A fake store holding the fixture setup, and an app seeded with token, setup and (optionally) history. */
+async function start({ history = true, sw = false, token, time, fake } = {}) {
+  fake = fake || new FakeGitHub();
+  if (!fake.get('setup.json')) fake.put('setup.json', JSON.stringify(SETUP, null, 2));
+  const app = await H.openApp({
+    fake, sw, time,
+    seed: { settings: H.SETTINGS(fake, token ? { token } : {}), setup: SETUP, sessions: history ? H.closedFixtureDocs() : [] },
+  });
+  return app;
+}
+
+async function begin(page, name = 'Test Upper') {
+  await page.click(`[data-workout="${name}"]`);
+  await page.waitForSelector('#app[data-view=workout]');
+}
+
+async function endWorkout(page, comment) {
+  await page.click('[data-action=end]');
+  await page.waitForSelector('[data-dialog=end]');
+  if (comment !== undefined) await page.fill('[data-dialog=end] textarea', comment);
+  await page.click('[data-dialog=end] [data-role=ok]');
+  await page.waitForSelector('#app[data-view=home]');
+}
+
+async function setVisibility(page, v) {
+  await page.evaluate(v => {
+    Object.defineProperty(document, 'visibilityState', { value: v, configurable: true });
+    Object.defineProperty(document, 'hidden', { value: v === 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, v);
+}
+
+const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$/;
+
+// ---------------------------------------------------------------------------
+
+test('App 1: offline from the start: start, log, end; everything in the database; queue shows one session', async () => {
+  const fake = new FakeGitHub();
+  const app = await start({ sw: true, fake });
+  const { page, ctx } = app;
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 10000 });
+  // Network off: the app's own site and GitHub.
+  fake.mode = 'offline';
+  await ctx.setOffline(true);
+  await page.reload();
+  await H.ready(page);
+  assert.equal(await page.getAttribute('#app', 'data-view'), 'home', 'the app opens from the service worker cache');
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await endWorkout(page, 'Offline session');
+  const db = await H.readDB(page);
+  assert.equal(db.sessions.filter(s => s.doc.date === '2026-11-12').length, 1);
+  const s = db.sessions.find(x => x.doc.date === '2026-11-12');
+  assert.equal(s.doc.status, 'closed');
+  assert.equal(s.doc.sets.length, 4);
+  assert.equal(s.doc.comment, 'Offline session');
+  assert.equal(s.dirty, true);
+  assert.equal(s.sha, null);
+  assert.equal(await page.getAttribute('[data-queue]', 'data-queue'), '1');
+  assert.match(await page.textContent('[data-queue]'), /^1 session waiting to upload$/);
+  assert.match(await H.strip(page), /Offline · 4 sets saved on phone/);
+  assert.equal(fake.puts.length, 0);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('App 2: reload mid-session returns the same session, sets and current exercise', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await page.click('button.ex.row[data-slot="3"]');
+  await page.waitForSelector('.ex.current[data-slot="3"]');
+  await H.setEntry(page, 30, 7);
+  await H.waitFor(async () => { const o = await H.openSession(page); return o.ui.draft && o.ui.draft.weight === 30 && o.ui.draft.value === 7; }, { message: 'draft saved' });
+  const before = await H.openSession(page);
+  await page.reload();
+  await H.ready(page);
+  assert.equal(await page.getAttribute('#app', 'data-view'), 'workout');
+  const afterRec = await H.openSession(page);
+  assert.equal(afterRec.id, before.id);
+  assert.equal(afterRec.doc.sets.length, 2);
+  assert.ok(await page.$('.ex.current[data-slot="3"]'), 'current exercise is still slot 3');
+  const e = await H.entryValues(page);
+  assert.equal(e.weight, '30');
+  assert.equal(e.value, '7');
+  assert.equal(await page.locator('.ex.row[data-slot="1"] .num.done').count(), 0, 'slot 1 has 2 of 3 sets, not done');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('App 3: when the network returns the session uploads once; the store holds exactly one file', async () => {
+  const fake = new FakeGitHub();
+  fake.put('setup.json', JSON.stringify(SETUP, null, 2));
+  fake.mode = 'offline';
+  const app = await start({ fake });
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await endWorkout(page);
+  assert.match(await H.strip(page), /Offline · 2 sets saved on phone/);
+  fake.mode = 'online';
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await H.waitFor(async () => /All uploaded/.test(await H.strip(page)), { message: 'All uploaded' });
+  const paths = fake.sessionPaths();
+  assert.equal(paths.length, 1);
+  const db = await H.readDB(page);
+  const rec = db.sessions.find(s => s.doc.date === '2026-11-12');
+  assert.equal(paths[0], rec.path);
+  assert.deepEqual(fake.json(paths[0]), rec.doc);
+  assert.equal(rec.dirty, false);
+  assert.equal(rec.sha, fake.get(paths[0]).sha);
+  assert.equal(fake.puts.filter(p => p.path === rec.path).length, 1, 'one PUT for the session');
+  // Further triggers send nothing more.
+  await setVisibility(page, 'visible');
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await page.waitForTimeout(400);
+  assert.equal(fake.puts.filter(p => p.path === rec.path).length, 1);
+  assert.equal(await page.getAttribute('[data-queue]', 'data-queue'), '0');
+  await app.close();
+});
+
+test('App 4: connection cut mid-upload, then restored: still one file, with the latest revision', async () => {
+  const fake = new FakeGitHub();
+  const app = await start({ fake });
+  const { page } = app;
+  await begin(page);
+  // 1. GitHub stores the file but the reply never arrives: the app holds no marker.
+  fake.cutAfterCommit = 1;
+  await H.logSet(page);
+  await H.waitFor(async () => fake.puts.length === 1 && /Offline/.test(await H.strip(page)), { message: 'cut upload' });
+  let rec = await H.openSession(page);
+  assert.equal(rec.dirty, true);
+  assert.equal(rec.sha, null);
+  // 2. Next trigger: file exists with an older revision; update it.  Cut again.
+  fake.cutAfterCommit = 1;
+  await H.logSet(page);
+  await H.waitFor(() => fake.puts.length === 2, { message: 'second PUT' });
+  // 3. Fully offline for a set.
+  await H.waitFor(async () => /Offline/.test(await H.strip(page)), { message: 'offline' });
+  fake.mode = 'offline';
+  await H.logSet(page);
+  // 4. Restored.
+  fake.mode = 'online';
+  await H.logSet(page);
+  await H.waitFor(async () => /All uploaded/.test(await H.strip(page)), { message: 'All uploaded' });
+  rec = await H.openSession(page);
+  const paths = fake.sessionPaths();
+  assert.equal(paths.length, 1, 'exactly one session file');
+  assert.equal(fake.json(paths[0]).revision, rec.doc.revision);
+  assert.deepEqual(fake.json(paths[0]), rec.doc);
+  assert.equal(rec.dirty, false);
+  assert.equal(rec.sha, fake.get(paths[0]).sha);
+  // 5. Marker out of date (file changed elsewhere): the app re-reads once and updates.
+  const other = fake.json(paths[0]);
+  other.comment = 'changed elsewhere';
+  fake.put(paths[0], JSON.stringify(other));
+  await H.logSet(page);
+  await H.waitFor(async () => { const r = await H.openSession(page); return r && !r.dirty; }, { message: 'upload after 409' });
+  rec = await H.openSession(page);
+  assert.equal(fake.sessionPaths().length, 1);
+  assert.equal(fake.json(paths[0]).revision, rec.doc.revision);
+  assert.equal(fake.json(paths[0]).sets.length, 5);
+  await app.close();
+});
+
+test('App 5: pre-fill rules 1, 2 and 3, for both measures', async () => {
+  // Rules 1 and 2, with the fixture history.
+  let app = await start();
+  let page = app.page;
+  await begin(page, 'Test Lower');
+  // Rule 1, reps: set 1 of the last closed session with Test Leg Press (9 Nov: 130 × 13, not 5 Nov: 120 × 15).
+  let e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value, e.logDisabled], ['130', '13', false]);
+  assert.match(e.logText, /Log Set 1\s*130 kg × 13/);
+  // Rule 2, reps: set 2 takes today's values from the set just logged.
+  await H.setEntry(page, 140, 10);
+  await H.logSet(page);
+  e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], ['140', '10']);
+  // Rule 1, time: Test Kettlebell Carry, 9 Nov set 1: 28 kg × 75 s (not 5 Nov: 70 s).
+  await page.click('button.ex.row[data-slot="2"]');
+  await page.waitForSelector('.dock input[name=seconds]');
+  e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], ['28', '75']);
+  // Rule 2, time.
+  await H.setEntry(page, 30, 60);
+  await H.logSet(page);
+  e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], ['30', '60']);
+  assert.match(e.logText, /Log Set 2\s*30 kg each × 60 s/);
+  await app.close();
+
+  // Rule 3: no history, blank, Log inactive until both figures are entered; plus starts at one step.
+  app = await start({ history: false });
+  page = app.page;
+  await begin(page, 'Test Upper');
+  e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value, e.logDisabled], ['', '', true]);
+  await page.click('.dock [data-kind=weight] [data-step=plus]');
+  e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value, e.logDisabled], ['5', '', true], 'weight from blank starts at one step (5 kg)');
+  await page.click('.dock [data-kind=reps] [data-step=plus]');
+  e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value, e.logDisabled], ['5', '1', false]);
+  // Time measure, blank: Test Plank.
+  await page.click('button.ex.row[data-slot="4"]');
+  await page.waitForSelector('.dock input[name=seconds]');
+  e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value, e.logDisabled], ['', '', true]);
+  await page.click('.dock [data-kind=secs] [data-step=plus]');
+  e = await H.entryValues(page);
+  assert.deepEqual([e.value, e.logDisabled], ['5', true], 'seconds from blank starts at 5');
+  await page.click('.dock [data-kind=weight] [data-step=plus]');
+  e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.logDisabled], ['2.5', false]);
+  // Quarter steps display without rounding (barbell, 1.25 kg).
+  await page.click('[data-action=add-exercise]');
+  await page.click('[data-sheet=add] [data-group=Pull]');
+  await page.click('[data-sheet=add] [data-ex=B04]');
+  await page.waitForSelector('.ex.current[data-slot="5"]');
+  await page.click('.dock [data-kind=weight] [data-step=plus]');
+  await page.click('.dock [data-kind=weight] [data-step=plus]');
+  await page.click('.dock [data-kind=weight] [data-step=plus]');
+  e = await H.entryValues(page);
+  assert.equal(e.weight, '3.75');
+  await page.click('.dock [data-kind=weight] [data-step=minus]');
+  await page.click('.dock [data-kind=weight] [data-step=minus]');
+  await page.click('.dock [data-kind=weight] [data-step=minus]');
+  await page.click('.dock [data-kind=weight] [data-step=minus]');
+  e = await H.entryValues(page);
+  assert.equal(e.weight, '0', 'weight never goes below zero');
+  assert.equal(await page.textContent('.dock [data-kind=weight] label'), 'Plates kg');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('App 6: swap mid-exercise: logged sets keep the first exercise; later sets carry planned and actual', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await page.click('button.ex.row[data-slot="2"]');
+  await page.waitForSelector('.ex.current[data-slot="2"]');
+  let e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], ['45', '12']);
+  await H.logSet(page);
+  await page.click('[data-action=swap]');
+  await page.waitForSelector('[data-sheet=swap]');
+  const opts = await page.$$eval('[data-sheet=swap] [data-ex]', els => els.map(el => ({ id: el.dataset.ex, text: el.textContent })));
+  assert.deepEqual(opts.map(o => o.id), ['B02', 'B04', 'B03'], 'same-group active exercises; planned-later one last');
+  assert.match(opts[2].text, /later today/);
+  assert.match(opts[0].text, /Last 7 Nov · 35 kg × 12, 11/);
+  assert.match(opts[1].text, /Last 8 Nov/);
+  assert.match(await page.textContent('[data-sheet=swap] .sub'), /2 sets left; the set already logged stays as Test Cable Row/);
+  await page.click('[data-sheet=swap] [data-ex=B02]');
+  await page.waitForSelector('[data-sheet=swap]', { state: 'detached' });
+  // Pre-fill from the new exercise's own history (7 Nov, first set of Test Machine Row: 35 × 12).
+  e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], ['35', '12']);
+  await H.logSet(page);
+  await H.logSet(page);
+  const rec = await H.openSession(page);
+  const slot2 = rec.doc.sets.filter(s => s.position === 2).sort((a, b) => a.set_number - b.set_number);
+  assert.deepEqual(slot2.map(s => [s.set_number, s.planned_exercise_id, s.planned_exercise_name, s.exercise_id, s.exercise_name, s.type, s.group]), [
+    [1, 'B01', 'Test Cable Row', 'B01', 'Test Cable Row', 'cable', 'Pull'],
+    [2, 'B01', 'Test Cable Row', 'B02', 'Test Machine Row', 'machine', 'Pull'],
+    [3, 'B01', 'Test Cable Row', 'B02', 'Test Machine Row', 'machine', 'Pull'],
+  ]);
+  // Swap back is possible and destroys nothing.
+  await page.click('button.ex.row[data-slot="2"]');
+  await page.click('[data-action=swap]');
+  assert.ok(await page.$('[data-sheet=swap] [data-ex=B01]'), 'the planned exercise is offered to swap back');
+  await page.click('[data-sheet=swap] [data-action=cancel]');
+  assert.equal((await H.openSession(page)).doc.sets.length, 3);
+  await app.close();
+});
+
+test('App 7: an extra set beyond the plan is numbered and stored', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await page.waitForSelector('.ex.current[data-slot="2"]');
+  assert.ok(await page.$('.ex.row[data-slot="1"] .num.done'));
+  await page.click('button.ex.row[data-slot="1"]');
+  await page.waitForSelector('[data-dock=complete]');
+  await page.click('[data-action=add-set-dock]');
+  await page.waitForSelector('[data-dock=entry]');
+  assert.match(await page.textContent('.dock .title b'), /^Set 4 of 4 · Test Machine Press$/);
+  const set3 = (await H.openSession(page)).doc.sets.find(s => s.position === 1 && s.set_number === 3);
+  const e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], [String(set3.weight_kg), String(set3.reps)], 'extra set pre-filled by rule 2');
+  await H.logSet(page);
+  // And one more with the in-card "+ Set".
+  await page.click('button.ex.row[data-slot="1"]');
+  await page.waitForSelector('.ex.current[data-slot="1"]');
+  await page.click('.ex.current [data-action=add-set]');
+  await H.logSet(page);
+  const rec = await H.openSession(page);
+  const s1 = rec.doc.sets.filter(s => s.position === 1).sort((a, b) => a.set_number - b.set_number);
+  assert.deepEqual(s1.map(s => s.set_number), [1, 2, 3, 4, 5]);
+  assert.equal(s1[3].planned_exercise_id, 'A01');
+  assert.equal(s1[3].exercise_id, 'A01');
+  await app.close();
+});
+
+test('App 8: each confirmation box appears, cancels by default, and acts only on the explicit button', async () => {
+  const app = await start();
+  const { page } = app;
+
+  /** Opens the box with `open`, checks it, and cancels it three ways; returns the opener's box. */
+  async function cancelThreeWays(id, open, unchanged) {
+    for (const how of ['button', 'outside', 'escape']) {
+      const opener = await open();
+      await page.waitForSelector(`[data-dialog=${id}]`);
+      const okBox = await page.locator(`[data-dialog=${id}] [data-role=ok]`).boundingBox();
+      if (opener) {
+        const overlap = !(okBox.x > opener.x + opener.width || okBox.x + okBox.width < opener.x || okBox.y > opener.y + opener.height || okBox.y + okBox.height < opener.y);
+        assert.equal(overlap, false, `${id}: destructive button is not under the spot that opened the box`);
+      }
+      assert.equal(await page.evaluate(() => document.activeElement && document.activeElement.dataset.role), 'cancel', `${id}: Cancel is the default`);
+      if (how === 'button') await page.click(`[data-dialog=${id}] [data-role=cancel]`);
+      if (how === 'outside') await page.mouse.click(5, 5);
+      if (how === 'escape') await page.keyboard.press('Escape');
+      await page.waitForSelector(`[data-dialog=${id}]`, { state: 'detached' });
+      await unchanged();
+    }
+  }
+  const box = sel => page.locator(sel).boundingBox();
+  const clickAndBox = sel => async () => { const b = await box(sel); await page.click(sel); return b; };
+
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  const countIs = n => async () => assert.equal((await H.openSession(page)).doc.sets.length, n);
+
+  // Undo last set.
+  await cancelThreeWays('undo', clickAndBox('[data-action=undo]'), countIs(2));
+  await page.click('[data-action=undo]');
+  assert.match(norm(await page.textContent('[data-dialog=undo] h2')), /^Remove the last set \(40 kg × 12\)\?$/);
+  await page.click('[data-dialog=undo] [data-role=ok]');
+  await H.waitFor(async () => (await H.openSession(page)).doc.sets.length === 1, { message: 'undo' });
+
+  // Delete a set (from Edit Set).
+  await H.logSet(page);
+  const setId = (await H.openSession(page)).doc.sets.find(s => s.set_number === 1).set_id;
+  await page.click(`[data-set="${setId}"]`);
+  await page.waitForSelector('[data-sheet=edit]');
+  await cancelThreeWays('delete-set', clickAndBox('[data-sheet=edit] [data-action=delete]'), countIs(2));
+  await page.click('[data-sheet=edit] [data-action=delete]');
+  assert.equal(norm(await page.textContent('[data-dialog=delete-set] h2')), 'Delete set 1 of Test Machine Press?');
+  await page.click('[data-dialog=delete-set] [data-role=ok]');
+  await H.waitFor(async () => (await H.openSession(page)).doc.sets.length === 1, { message: 'delete set' });
+  const left = (await H.openSession(page)).doc.sets;
+  assert.equal(left[0].set_number, 1, 'later sets renumbered');
+
+  // End Workout.
+  await cancelThreeWays('end', clickAndBox('[data-action=end]'), async () => assert.ok(await H.openSession(page)));
+  await page.click('[data-action=end]');
+  assert.equal(norm(await page.textContent('[data-dialog=end] h2')), 'End workout?');
+  assert.equal(norm(await page.textContent('[data-dialog=end] .boxtext')), '1 set logged');
+  await page.click('[data-dialog=end] [data-role=ok]');
+  await page.waitForSelector('#app[data-view=home]');
+  assert.equal(await H.openSession(page), null);
+
+  // Delete a past session (History).
+  await page.click('[data-nav=history]');
+  const target = H.fixtureDoc('2bd74d3b');
+  await page.click(`[data-session="${target.session_id}"]`);
+  await page.waitForSelector('#app[data-view=session]');
+  const statusOf = async () => (await H.readDB(page)).sessions.find(s => s.id === target.session_id).doc.status;
+  await cancelThreeWays('delete-session', async () => { await page.locator('[data-action=delete-session]').scrollIntoViewIfNeeded(); const b = await box('[data-action=delete-session]'); await page.click('[data-action=delete-session]'); return b; },
+    async () => assert.equal(await statusOf(), 'closed'));
+  await page.click('[data-action=delete-session]');
+  assert.equal(norm(await page.textContent('[data-dialog=delete-session] h2')), 'Delete the session of 3 November?');
+  await page.click('[data-dialog=delete-session] [data-role=ok]');
+  await H.waitFor(async () => (await statusOf()) === 'deleted', { message: 'session deleted' });
+  const del = (await H.readDB(page)).sessions.find(s => s.id === target.session_id).doc;
+  assert.deepEqual(del.sets, []);
+  assert.equal(del.revision, target.revision + 1);
+
+  // Remove the token, and Replace the token (Settings).
+  await page.waitForSelector('#app[data-view=history]');
+  await page.click('[data-action=back]');
+  await page.click('[data-nav=settings]');
+  await page.waitForSelector('[data-token=saved]');
+  const tokenIs = async () => assert.equal((await H.readDB(page)).kv.settings.token, 'good-token');
+  await cancelThreeWays('replace-token', clickAndBox('[data-action=replace-token]'), tokenIs);
+  await cancelThreeWays('remove-token', clickAndBox('[data-action=remove-token]'), tokenIs);
+  await page.click('[data-action=remove-token]');
+  assert.equal(norm(await page.textContent('[data-dialog=remove-token] h2')), 'Remove the saved token?');
+  await page.click('[data-dialog=remove-token] [data-role=ok]');
+  await H.waitFor(async () => (await H.readDB(page)).kv.settings.token === '', { message: 'token removed' });
+  assert.deepEqual(app.dialogs, [], 'the browser\u2019s own pop-ups are never used');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('App 9: double-tap guard: two taps within a second log one set', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await page.clock.fastForward(1100);
+  await page.click('[data-action=log]');
+  await page.click('[data-action=log]');
+  await page.waitForTimeout(300);
+  assert.equal((await H.openSession(page)).doc.sets.length, 1);
+  await page.dblclick('[data-action=log]');
+  await page.waitForTimeout(300);
+  assert.equal((await H.openSession(page)).doc.sets.length, 1, 'still within the second after the log');
+  await page.clock.fastForward(1100);
+  await page.click('[data-action=log]');
+  await H.waitFor(async () => (await H.openSession(page)).doc.sets.length === 2, { message: 'second set after a second' });
+  await app.close();
+});
+
+test('App 10: auto-close after two hours, with the end time taken from the last set', async () => {
+  const app = await start();
+  const { page, fake } = app;
+  await begin(page);
+  await H.logSet(page);
+  await page.clock.fastForward('05:00');
+  await H.logSet(page);
+  const last = (await H.openSession(page)).doc.sets[1].logged_at;
+  // 1 h 59 min after the last set: still open.
+  await page.clock.fastForward('01:59:00');
+  await setVisibility(page, 'hidden');
+  await setVisibility(page, 'visible');
+  await page.waitForTimeout(200);
+  assert.ok(await H.openSession(page), 'not closed before two hours');
+  // Past two hours: closed when the app returns to the front.
+  await page.clock.fastForward('02:00');
+  await setVisibility(page, 'hidden');
+  await setVisibility(page, 'visible');
+  await page.waitForSelector('#app[data-view=home]');
+  const db = await H.readDB(page);
+  const s = db.sessions.find(x => x.doc.date === '2026-11-12');
+  assert.equal(s.doc.status, 'auto_closed');
+  assert.equal(s.doc.ended_at, last);
+  assert.equal(await H.openSession(page), null);
+  await H.waitFor(() => fake.sessionPaths().length === 1 && fake.json(fake.sessionPaths()[0]).status === 'auto_closed', { message: 'auto_closed uploaded' });
+  // A session with no sets is discarded without trace, also on opening the app.
+  await begin(page);
+  const emptyId = (await H.openSession(page)).id;
+  await page.clock.fastForward('02:01:00');
+  await page.reload();
+  await H.ready(page);
+  assert.equal(await page.getAttribute('#app', 'data-view'), 'home');
+  const db2 = await H.readDB(page);
+  assert.equal(db2.sessions.find(x => x.id === emptyId), undefined);
+  assert.equal(fake.sessionPaths().filter(p => p.includes(emptyId)).length, 0);
+  await app.close();
+});
+
+test('App 11: a token rejected by the store shows the 6.4 message and loses nothing', async () => {
+  const app = await start({ token: 'bad-token' });
+  const { page, fake } = app;
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await H.waitFor(async () => /refused/.test(await H.strip(page)), { message: 'refused message' });
+  assert.match(await H.strip(page), /GitHub refused the token\. Sets are safe on the phone\. Open Settings to replace it\./);
+  let rec = await H.openSession(page);
+  assert.equal(rec.doc.sets.length, 2);
+  assert.equal(rec.dirty, true);
+  assert.equal(fake.sessionPaths().length, 0);
+  // Replace the token: everything goes up.
+  await page.click('#strip');
+  await page.waitForSelector('#app[data-view=settings]');
+  await page.click('[data-action=replace-token]');
+  await page.click('[data-dialog=replace-token] [data-role=ok]');
+  await page.fill('input[name=token]', 'good-token');
+  await page.click('[data-action=save-token]');
+  await H.waitFor(() => fake.sessionPaths().length === 1, { message: 'upload with the new token' });
+  await page.click('[data-action=back]');
+  await page.waitForSelector('#app[data-view=workout]');
+  rec = await H.openSession(page);
+  assert.equal(fake.json(fake.sessionPaths()[0]).sets.length, 2);
+  await H.waitFor(async () => /All uploaded/.test(await H.strip(page)), { message: 'All uploaded' });
+  assert.ok(fake.log.every(l => l.auth === '' || l.auth.startsWith('Bearer ')));
+  await app.close();
+});
+
+test('App 12: stopwatch: start, wait with the page hidden, stop; the seconds match the clock', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await page.click('button.ex.row[data-slot="4"]');
+  await page.waitForSelector('[data-action=stopwatch]');
+  await page.click('[data-action=stopwatch]');
+  await page.waitForSelector('.watch.running');
+  await setVisibility(page, 'hidden');
+  await page.clock.fastForward(47000);
+  await setVisibility(page, 'visible');
+  await page.click('[data-action=stopwatch]');
+  await page.waitForSelector('.watch:not(.running)');
+  assert.equal((await H.entryValues(page)).value, '47');
+  // A reload (or a crash) while it runs does not stop it: it is worked out from the start time.
+  await page.click('[data-action=stopwatch]');
+  await page.waitForSelector('.watch.running');
+  await H.waitFor(async () => (await H.openSession(page)).ui.stopwatch, { message: 'stopwatch saved' });
+  await page.clock.fastForward(20000);
+  await page.reload();
+  await H.ready(page);
+  await page.waitForSelector('.watch.running');
+  await page.clock.fastForward(10000);
+  await page.click('[data-action=stopwatch]');
+  await page.waitForSelector('.watch:not(.running)');
+  assert.equal((await H.entryValues(page)).value, '30');
+  await H.logSet(page, { advance: 0 });
+  const set = (await H.openSession(page)).doc.sets[0];
+  assert.equal(set.duration_s, 30);
+  assert.equal(set.measure, 'time');
+  assert.equal(set.reps, undefined);
+  await app.close();
+});
+
+test('App 13: a setup refresh during a session does not alter that session', async () => {
+  const app = await start();
+  const { page, fake } = app;
+  await begin(page);
+  await H.logSet(page);
+  const before = clone(await H.openSession(page));
+  const s2 = clone(SETUP);
+  s2.published_at = '2026-11-12T09:00:00+07:00';
+  s2.hash = 'changed';
+  s2.exercises.find(e => e.id === 'A01').name = 'Test Machine Press Renamed';
+  s2.exercises.find(e => e.id === 'B01').note = 'A new note';
+  s2.workouts.find(w => w.name === 'Test Upper').items.find(i => i.exercise_id === 'B01').sets = 5;
+  fake.put('setup.json', JSON.stringify(s2, null, 2));
+  await page.click('#strip');
+  await page.click('[data-action=refresh-setup]');
+  await H.waitFor(async () => (await H.readDB(page)).kv.setup.published_at === s2.published_at, { message: 'setup stored' });
+  await page.click('[data-action=back]');
+  await page.waitForSelector('#app[data-view=workout]');
+  assert.match(await page.textContent('.ex.current .name'), /^Test Machine Press$/);
+  assert.match(await page.textContent('.ex.row[data-slot="2"] .meta'), /3 × 10–12 reps/);
+  await page.click('button.ex.row[data-slot="2"]');
+  await page.waitForSelector('.ex.current[data-slot="2"]');
+  assert.match(await page.textContent('.ex.current .notes'), /Neutral V-handle/);
+  assert.doesNotMatch(await page.textContent('.ex.current .notes'), /A new note/);
+  await page.click('button.ex.row[data-slot="1"]');
+  await page.waitForSelector('.ex.current[data-slot="1"]');
+  await H.logSet(page);
+  const during = await H.openSession(page);
+  assert.equal(during.doc.setup_published_at, before.doc.setup_published_at);
+  assert.equal(during.doc.sets[1].exercise_name, 'Test Machine Press');
+  assert.deepEqual(during.snapshot, before.snapshot);
+  assert.deepEqual(during.slots, before.slots);
+  await endWorkout(page);
+  // The next session uses the new setup.
+  await begin(page);
+  assert.match(await page.textContent('.ex.current .name'), /^Test Machine Press Renamed$/);
+  assert.match(await page.textContent('.ex.row[data-slot="2"] .meta'), /5 × 10–12 reps/);
+  assert.equal((await H.openSession(page)).doc.setup_published_at, s2.published_at);
+  await app.close();
+});
+
+test('App 14: nothing is requested from any address other than the app\u2019s own and api.github.com', async () => {
+  const fake = new FakeGitHub();
+  const app = await start({ sw: true, fake });
+  const { page, srv, requests } = app;
+  const auth = [];
+  app.ctx.on('request', r => { const a = r.headers().authorization; if (a) auth.push(r.url()); });
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 10000 });
+  await page.reload();
+  await H.ready(page);
+  // A normal session touching every screen.
+  await begin(page);
+  await H.logSet(page);
+  await page.click('[data-action=swap]');
+  await page.click('[data-sheet=swap] [data-ex=A02]');
+  await page.waitForSelector('[data-sheet=swap]', { state: 'detached' });
+  assert.equal((await H.entryValues(page)).logText, 'Log Set 2', 'never done before: blank, Log inactive');
+  await H.setEntry(page, 20, 12);
+  await H.logSet(page);
+  await page.click('[data-action=add-exercise]');
+  await page.click('[data-sheet=add] [data-group=Core]');
+  await page.click('[data-sheet=add] [data-ex=D01]');
+  await H.logSet(page);
+  const setId = (await H.openSession(page)).doc.sets[0].set_id;
+  await page.click('button.ex.row[data-slot="1"]');
+  await page.click(`[data-set="${setId}"]`);
+  await page.click('[data-sheet=edit] .steps [data-kind=reps] [data-step=plus]');
+  await page.click('[data-sheet=edit] [data-action=save]');
+  await endWorkout(page, 'Normal session');
+  await page.click('[data-nav=history]');
+  await page.click('[data-action=back]');
+  await page.click('[data-nav=settings]');
+  await page.click('[data-action=test]');
+  await page.waitForSelector('#conn-status.ok');
+  await page.click('[data-action=refresh-setup]');
+  await H.waitFor(async () => /All uploaded/.test(await H.strip(page)), { message: 'All uploaded' });
+  const bad = requests.filter(u => !u.startsWith(`${srv.origin}/`) && !u.startsWith('https://api.github.com/') && !u.startsWith('blob:') && !u.startsWith('data:'));
+  assert.deepEqual(bad, []);
+  assert.ok(requests.some(u => u.startsWith('https://api.github.com/')), 'GitHub was used');
+  assert.ok(auth.length > 0 && auth.every(u => u.startsWith('https://api.github.com/')), 'the token goes only to api.github.com');
+  assert.ok(requests.filter(u => u.startsWith(srv.origin)).every(u => u.startsWith(`${srv.origin}/gym-log-app/`)), 'every own request stays under the app path');
+  assert.deepEqual(app.errors, [], 'no script errors');
+  // The only console messages allowed are the browser's network log for GitHub's expected
+  // 404 when the app asks whether a new session file exists (brief 6.3 step 2).
+  assert.deepEqual(app.consoleErrors.filter(m => !/Failed to load resource: the server responded with a status of 404/.test(m)), []);
+  assert.deepEqual(app.dialogs, []);
+  await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// Beyond 10.3: the data contract, the shell, restore, export, storage failure.
+
+test('Contract: a session file made by the app matches the fixture shape', async () => {
+  const fake = new FakeGitHub();
+  const app = await start({ fake });
+  const { page } = app;
+  // Preset workout: planned sets, a swap, an extra set, a time exercise, an added exercise, a correction.
+  await begin(page);
+  await H.logSet(page);
+  await page.click('[data-action=swap]');
+  await page.click('[data-sheet=swap] [data-ex=A03]');
+  await H.setEntry(page, 12.5, 10);
+  await H.logSet(page);
+  await H.logSet(page);
+  await page.waitForSelector('.ex.current[data-slot="2"]');
+  await page.click('button.ex.row[data-slot="1"]');
+  await page.waitForSelector('[data-dock=complete]');
+  await page.click('.ex.current [data-action=add-set]');
+  await page.waitForSelector('[data-dock=entry]');
+  await H.logSet(page);
+  await page.click('button.ex.row[data-slot="4"]');
+  await page.waitForSelector('.ex.current[data-slot="4"]');
+  await H.logSet(page);
+  await page.click('[data-action=add-exercise]');
+  await page.click('[data-sheet=add] [data-group=Legs]');
+  await page.click('[data-sheet=add] [data-ex=C02]');
+  await H.logSet(page);
+  const first = (await H.openSession(page)).doc.sets[0].set_id;
+  await page.click('button.ex.row[data-slot="1"]');
+  await page.click(`[data-set="${first}"]`);
+  await page.click('[data-sheet=edit] .steps [data-kind=weight] [data-step=plus]');
+  await page.click('[data-sheet=edit] [data-action=save]');
+  await endWorkout(page, 'Contract check');
+  // Free-form session.
+  await begin(page, '');
+  await page.click('[data-sheet=add] [data-group=Core]');
+  await page.click('[data-sheet=add] [data-ex=D02]');
+  await H.logSet(page);
+  await endWorkout(page);
+  await H.waitFor(() => fake.sessionPaths().length === 2 && fake.sessionPaths().every(p => ['closed'].includes(fake.json(p).status)), { message: 'both uploaded' });
+
+  const fixtures = H.FIXTURE_SESSIONS.map(s => JSON.parse(s.text));
+  const fixtureClosed = fixtures.find(d => d.status === 'closed');
+  const topKeys = Object.keys(fixtureClosed).sort();
+  const fxSet = (measure, planned) => fixtures.flatMap(d => d.sets).find(s => s.measure === measure && !!s.planned_exercise_id === planned && !s.edited_at);
+  const setKeys = s => Object.keys(s).filter(k => k !== 'edited_at').sort();
+  // The fixtures have planned sets of both measures but an unplanned set only for reps, so the
+  // unplanned shape is the planned one without the planned pair; checked here against reps.
+  const expectedKeys = (measure, planned) => {
+    const base = setKeys(fxSet(measure, true));
+    return planned ? base : base.filter(k => !k.startsWith('planned_'));
+  };
+  assert.deepEqual(expectedKeys('reps', false), setKeys(fxSet('reps', false)));
+
+  for (const p of fake.sessionPaths()) {
+    const doc = fake.json(p);
+    assert.deepEqual(Object.keys(doc).sort(), topKeys, `${p}: top-level keys as the fixtures`);
+    assert.equal(doc.format, 1);
+    assert.match(p, new RegExp(`^sessions/(\\d{4})/\\1-\\d\\d-\\d\\d_${doc.session_id}\\.json$`));
+    assert.equal(p, `sessions/${doc.date.slice(0, 4)}/${doc.date}_${doc.session_id}.json`);
+    assert.equal(doc.date, doc.started_at.slice(0, 10));
+    for (const k of ['started_at', 'ended_at', 'updated_at']) assert.match(doc[k], ISO, `${k} is ISO with offset`);
+    assert.ok(doc.started_at.endsWith('+07:00'));
+    assert.ok(Number.isInteger(doc.revision) && doc.revision > 0);
+    assert.equal(doc.setup_published_at, SETUP.published_at);
+    assert.equal(typeof doc.app_version, 'string');
+    for (const s of doc.sets) {
+      assert.deepEqual(setKeys(s), expectedKeys(s.measure, !!s.planned_exercise_id), `set keys for ${s.measure}, planned=${!!s.planned_exercise_id}`);
+      assert.match(s.logged_at, ISO);
+      if (s.edited_at !== undefined) assert.match(s.edited_at, ISO);
+      assert.equal(typeof s.weight_kg, 'number');
+      if (s.measure === 'reps') assert.ok(Number.isInteger(s.reps)); else assert.ok(Number.isInteger(s.duration_s));
+      const ex = SETUP.exercises.find(e => e.id === s.exercise_id);
+      assert.deepEqual([s.exercise_name, s.group, s.type, s.measure], [ex.name, ex.group, ex.type, ex.measure]);
+    }
+    const positions = [...new Set(doc.sets.map(s => s.position))].sort((a, b) => a - b);
+    for (const pos of positions) {
+      const nums = doc.sets.filter(s => s.position === pos).map(s => s.set_number).sort((a, b) => a - b);
+      assert.deepEqual(nums, nums.map((_, i) => i + 1));
+    }
+  }
+  const preset = fake.sessionPaths().map(p => fake.json(p)).find(d => d.workout_name === 'Test Upper');
+  const free = fake.sessionPaths().map(p => fake.json(p)).find(d => d.workout_name === '');
+  assert.ok(preset.sets.some(s => s.planned_exercise_id && s.planned_exercise_id !== s.exercise_id), 'swap recorded');
+  assert.ok(preset.sets.some(s => s.set_number === 4), 'extra set recorded');
+  assert.ok(preset.sets.some(s => s.edited_at), 'correction recorded');
+  const added = preset.sets.find(s => s.exercise_id === 'C02');
+  assert.equal(added.position, 5);
+  assert.equal(added.planned_exercise_id, undefined, 'added exercise has no planned exercise');
+  assert.ok(free.sets.every(s => s.planned_exercise_id === undefined && s.planned_exercise_name === undefined));
+  assert.equal(preset.comment, 'Contract check');
+  await app.close();
+});
+
+test('Shell: service worker caches every app file; manifest, icons, meta tags, CSP and relative URLs', async () => {
+  const docs = path.resolve(__dirname, '..', '..', 'docs');
+  const walk = d => fs.readdirSync(d, { withFileTypes: true }).flatMap(e => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const files = walk(docs).map(f => path.relative(docs, f).split(path.sep).join('/')).filter(f => f !== 'sw.js');
+  const sw = fs.readFileSync(path.join(docs, 'sw.js'), 'utf8');
+  const listed = JSON.parse(sw.match(/const FILES = (\[[\s\S]*?\]);/)[1].replace(/'/g, '"').replace(/,\s*\]/, ']'));
+  for (const f of files) assert.ok(listed.includes(f), `${f} is in the service worker's cache list`);
+  for (const f of listed) assert.ok(f === './' || files.includes(f), `${f} exists`);
+  const manifest = JSON.parse(fs.readFileSync(path.join(docs, 'manifest.webmanifest'), 'utf8'));
+  assert.equal(manifest.name, 'Swole');
+  assert.equal(manifest.short_name, 'Swole');
+  assert.equal(manifest.display, 'standalone');
+  assert.equal(manifest.orientation, 'portrait');
+  assert.equal(manifest.start_url, './');
+  const html = fs.readFileSync(path.join(docs, 'index.html'), 'utf8');
+  assert.match(html, /viewport-fit=cover/);
+  assert.match(html, /apple-touch-icon" href="icons\/icon-180.png"/);
+  assert.match(html, /apple-mobile-web-app-capable" content="yes"/);
+  assert.match(html, /default-src 'self'/);
+  assert.match(html, /connect-src 'self' https:\/\/api\.github\.com;/);
+  assert.match(html, /img-src 'self' data:/);
+  assert.doesNotMatch(html, /<script(?![^>]*src=)/, 'no inline script');
+  assert.doesNotMatch(html, /style=/, 'no inline style');
+  assert.doesNotMatch(html, /(src|href)="\//, 'no root-relative URLs');
+  for (const f of files.filter(f => /\.(js|css|html|webmanifest)$/.test(f))) {
+    const text = fs.readFileSync(path.join(docs, f), 'utf8');
+    const urls = text.match(/https?:\/\/[^\s'"`)]+/g) || [];
+    assert.deepEqual(urls.filter(u => !u.startsWith('https://api.github.com')), [], `${f} names no other site`);
+    assert.doesNotMatch(text, /window\.(confirm|alert|prompt)|[^.\w](alert|confirm|prompt)\(/, `${f} uses no browser pop-ups`);
+    assert.doesNotMatch(text, /console\.log/, `${f} logs nothing`);
+  }
+  for (const size of [180, 192, 512]) {
+    const png = fs.readFileSync(path.join(docs, 'icons', `icon-${size}.png`));
+    assert.equal(png.readUInt32BE(16), size);
+    assert.equal(png.readUInt32BE(20), size);
+  }
+  // In the browser: version shown in Settings, persistent storage asked for on first run, owner default.
+  const app = await start({ history: false });
+  const { page } = app;
+  const version = fs.readFileSync(path.join(docs, 'version.js'), 'utf8').match(/SWOLE_VERSION = '([^']+)'/)[1];
+  await page.click('[data-nav=settings]');
+  assert.equal(await page.getAttribute('[data-version]', 'data-version'), version);
+  await page.waitForSelector('#persist-status[data-persisted]');
+  assert.match(await page.textContent('#persist-status'), /Persistent storage: (granted|not granted)/);
+  const db = await H.readDB(page);
+  assert.ok(db.kv.meta.persist_asked, 'persistent storage requested on first run');
+  // Tap-target sizes are measured screen by screen in the "Tap targets" test.
+  await page.click('[data-action=back]');
+  await begin(page);
+  const fonts = await page.evaluate(() => [...document.querySelectorAll('input, textarea')].map(e => parseFloat(getComputedStyle(e).fontSize)));
+  assert.ok(fonts.every(f => f >= 16), 'inputs are at least 16 px');
+  await app.close();
+});
+
+test('Restore: with a working token and no sessions, the app offers and downloads its history', async () => {
+  const fake = new FakeGitHub();
+  fake.put('setup.json', JSON.stringify(SETUP, null, 2));
+  for (const s of H.FIXTURE_SESSIONS) fake.put(s.path, s.text);
+  const app = await start({ fake, history: false });
+  const { page } = app;
+  await page.waitForSelector('[data-banner=restore]');
+  await page.click('[data-banner=restore] [data-action=restore]');
+  await H.waitFor(async () => (await H.readDB(page)).sessions.length === H.FIXTURE_SESSIONS.length, { message: 'all sessions downloaded' });
+  const db = await H.readDB(page);
+  for (const s of H.FIXTURE_SESSIONS) {
+    const doc = JSON.parse(s.text);
+    const rec = db.sessions.find(r => r.id === doc.session_id);
+    assert.equal(rec.path, s.path);
+    if (doc.status !== 'open') {
+      assert.deepEqual(rec.doc, doc, 'a closed session is stored exactly as downloaded');
+      assert.equal(rec.dirty, false);
+      assert.equal(rec.sha, fake.get(s.path).sha);
+    }
+  }
+  // The fixture's open session is more than two hours old here, so it is auto-closed by the normal route.
+  const open = db.sessions.find(r => r.id.startsWith('f271ee04'));
+  assert.equal(open.doc.status, 'auto_closed');
+  assert.equal(open.doc.ended_at, '2026-11-10T16:48:00+07:00');
+  await page.click('[data-nav=history]');
+  assert.equal(await page.locator('[data-session]').count(), H.FIXTURE_SESSIONS.length - 1, 'History lists every session but the deleted one');
+  // Pre-fill now works from the downloaded history.
+  await page.click('[data-action=back]');
+  await begin(page, 'Test Lower');
+  const e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], ['130', '13']);
+  assert.deepEqual(fake.puts.map(p => p.path), [open.path], 'only the auto-closed session was written back');
+  await app.close();
+});
+
+test('Export: one file with every session and the setup, and no token', async () => {
+  const app = await start();
+  const { page } = app;
+  await page.click('[data-nav=settings]');
+  const [download] = await Promise.all([page.waitForEvent('download'), page.click('[data-action=export]')]);
+  const text = fs.readFileSync(await download.path(), 'utf8');
+  const data = JSON.parse(text);
+  assert.match(download.suggestedFilename(), /^swole-export-2026-11-12\.json$/);
+  assert.equal(data.sessions.length, H.closedFixtureDocs().length);
+  assert.deepEqual(data.setup, SETUP);
+  assert.ok(!text.includes('good-token'), 'the token is not exported');
+  await app.close();
+});
+
+test('Storage failure: a set that cannot be written is named in a blocking message and not shown as logged', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await page.evaluate(() => {
+    const put = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...a) {
+      if (this.name === 'sessions') throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+      return put.apply(this, a);
+    };
+  });
+  await page.clock.fastForward(1100);
+  await page.click('[data-action=log]');
+  await page.waitForSelector('[data-dialog=storage-failed]');
+  assert.match(norm(await page.textContent('[data-dialog=storage-failed]')), /Set 1 of Test Machine Press \(40 kg × 12\) was not saved/);
+  assert.equal(await page.locator('.ex.current .set.done').count(), 0);
+  await page.click('[data-dialog=storage-failed] [data-role=ok]');
+  assert.equal((await H.openSession(page)).doc.sets.length, 0);
+  await app.close();
+});
+
+test('Update: at cold start a waiting version takes over and the page reloads once; never after it is in use', async () => {
+  const app = await start({ sw: true });
+  const { page, ctx, srv } = app;
+  const swVersion = p => p.evaluate(() => self.SWOLE_VERSION);
+  const waiting = p => p.evaluate(async () => !!(await navigator.serviceWorker.getRegistration()).waiting);
+  const original = await swVersion(page);
+  try {
+    await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 10000 });
+    // A new version is published; the running page (an app in use) finds it and downloads it.
+    srv.overrides['version.js'] = "self.SWOLE_VERSION = '9.9.9-test';\n";
+    await page.evaluate(async () => { await (await navigator.serviceWorker.getRegistration()).update(); });
+    await H.waitFor(() => waiting(page), { message: 'new version waiting' });
+    let navA = 0;
+    page.on('framenavigated', f => { if (f === page.mainFrame()) navA++; });
+    // Cold start of the app while the old page is still alive, so the new version is still waiting.
+    const b = await ctx.newPage();
+    let navB = 0;
+    b.on('framenavigated', f => { if (f === b.mainFrame()) navB++; });
+    await b.goto(srv.base);
+    await H.waitFor(async () => { try { return (await swVersion(b)) === '9.9.9-test'; } catch { return false; } }, { message: 'new version in use' });
+    await H.ready(b);
+    assert.equal(navB, 2, 'exactly one reload');
+    assert.equal((await H.readDB(b)).kv.swReload.from, original);
+    await b.waitForTimeout(500);
+    assert.equal(navA, 0, 'the page already in use is never reloaded');
+    assert.equal(await swVersion(page), original);
+    // Loop guard: a marker for the running version blocks a second reload even if another version waits.
+    await H.seed(b, {});
+    await b.evaluate(async () => {
+      const db = await new Promise(r => { const q = indexedDB.open('swole', 1); q.onsuccess = () => r(q.result); });
+      await new Promise(r => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put({ from: '9.9.9-test', at: 'x' }, 'swReload'); t.oncomplete = r; });
+      db.close();
+    });
+    srv.overrides['version.js'] = "self.SWOLE_VERSION = '9.9.9-next';\n";
+    await b.evaluate(async () => { await (await navigator.serviceWorker.getRegistration()).update(); });
+    await H.waitFor(() => waiting(b), { message: 'second version waiting' });
+    const c = await ctx.newPage();
+    let navC = 0;
+    c.on('framenavigated', f => { if (f === c.mainFrame()) navC++; });
+    await c.goto(srv.base);
+    await H.ready(c);
+    await c.waitForTimeout(800);
+    assert.equal(navC, 1, 'no reload when the marker says this version already reloaded');
+    assert.equal(await swVersion(c), '9.9.9-test');
+    assert.deepEqual(app.errors, []);
+  } finally {
+    delete srv.overrides['version.js'];
+    await app.close();
+  }
+});
+
+test('Tap targets: every button and tappable row on every screen is at least 44 × 44 (brief 5.1)', async () => {
+  const app = await start();
+  const { page } = app;
+  const problems = [];
+  const measure = async screen => {
+    // One atomic evaluation, so a re-render cannot detach elements between query and measurement.
+    const r = await page.evaluate(() => {
+      const sel = '#app button, #app input, #app textarea, #app a, #app [role=button], #sheets button, #sheets input, #dialogs button, #dialogs input, #dialogs textarea';
+      const els = [...document.querySelectorAll(sel)].filter(e => e.getClientRects().length);
+      const small = els.map(e => {
+        const b = e.getBoundingClientRect();
+        return { what: (e.textContent || e.name || e.getAttribute('aria-label') || e.tagName).trim().slice(0, 30), w: Math.round(b.width * 10) / 10, h: Math.round(b.height * 10) / 10 };
+      }).filter(x => x.w < 44 || x.h < 44);
+      return { count: els.length, small };
+    });
+    assert.ok(r.count > 0, `${screen}: something measured`);
+    for (const s of r.small) problems.push(`${screen}: "${s.what}" ${s.w} × ${s.h}`);
+  };
+  await measure('Home');
+  await begin(page);
+  await H.logSet(page);
+  await measure('Active Workout (reps)');
+  await page.click('button.ex.row[data-slot="4"]');
+  await page.waitForSelector('[data-action=stopwatch]');
+  await measure('Active Workout (time)');
+  await page.click('[data-action=stopwatch]');
+  await page.waitForSelector('.watch.running');
+  await measure('Active Workout (stopwatch running)');
+  await page.click('[data-action=stopwatch]');
+  await page.click('[data-action=swap]');
+  await page.waitForSelector('[data-sheet=swap]');
+  await measure('Swap');
+  await page.click('[data-sheet=swap] [data-action=cancel]');
+  await page.click('[data-action=add-exercise]');
+  await page.waitForSelector('[data-sheet=add] [data-group]');
+  await measure('Add Exercise (groups)');
+  await page.click('[data-sheet=add] [data-group=Pull]');
+  await page.waitForSelector('[data-sheet=add] [data-ex]');
+  await measure('Add Exercise (exercises)');
+  await page.click('[data-sheet=add] [data-action=cancel]');
+  await page.click('button.ex.row[data-slot="1"]');
+  const setId = (await H.openSession(page)).doc.sets[0].set_id;
+  await page.click(`[data-set="${setId}"]`);
+  await page.waitForSelector('[data-sheet=edit]');
+  await measure('Edit Set');
+  await page.click('[data-sheet=edit] [data-action=cancel]');
+  await page.click('[data-action=end]');
+  await page.waitForSelector('[data-dialog=end]');
+  await measure('End Workout box');
+  await page.click('[data-dialog=end] [data-role=ok]');
+  await page.waitForSelector('#app[data-view=home]');
+  await page.click('[data-nav=history]');
+  await page.waitForSelector('#app[data-view=history]');
+  await measure('History');
+  await page.click('[data-session^="a8b0b276"]');
+  await page.waitForSelector('#app[data-view=session]');
+  await measure('History session');
+  await page.click('[data-action=back]');
+  await page.click('[data-action=back]');
+  await page.click('[data-nav=settings]');
+  await page.waitForSelector('#app[data-view=settings]');
+  await measure('Settings');
+  await page.click('[data-action=replace-token]');
+  await page.click('[data-dialog=replace-token] [data-role=ok]');
+  await page.waitForSelector('input[name=token]');
+  await measure('Settings (token entry)');
+  assert.deepEqual(problems, []);
+  await app.close();
+});

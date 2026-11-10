@@ -1,0 +1,45 @@
+{
+  "format": 1,
+  "session_id": "f271ee04-b5e5-5d2a-bc29-608d262e7c1e",
+  "revision": 4,
+  "status": "open",
+  "date": "2026-11-10",
+  "started_at": "2026-11-10T16:42:00+07:00",
+  "workout_name": "Test Upper",
+  "comment": "",
+  "setup_published_at": "2026-11-02T08:15:00+07:00",
+  "app_version": "1.0.0",
+  "updated_at": "2026-11-10T16:48:00+07:00",
+  "sets": [
+    {
+      "set_id": "851b0e4f-1d38-5f81-b6c6-cc9d109783ce",
+      "position": 1,
+      "set_number": 1,
+      "exercise_id": "A01",
+      "exercise_name": "Test Machine Press",
+      "group": "Push",
+      "type": "machine",
+      "measure": "reps",
+      "weight_kg": 42.5,
+      "logged_at": "2026-11-10T16:45:00+07:00",
+      "planned_exercise_id": "A01",
+      "planned_exercise_name": "Test Machine Press",
+      "reps": 10
+    },
+    {
+      "set_id": "06cb3ebe-441e-5d1e-9463-295785063d0d",
+      "position": 1,
+      "set_number": 2,
+      "exercise_id": "A01",
+      "exercise_name": "Test Machine Press",
+      "group": "Push",
+      "type": "machine",
+      "measure": "reps",
+      "weight_kg": 42.5,
+      "logged_at": "2026-11-10T16:48:00+07:00",
+      "planned_exercise_id": "A01",
+      "planned_exercise_name": "Test Machine Press",
+      "reps": 10
+    }
+  ]
+}

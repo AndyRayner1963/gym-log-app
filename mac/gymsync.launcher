@@ -1,0 +1,2 @@
+#!/bin/bash
+exec "$HOME/gym-log-app/mac/.venv/bin/python" "$HOME/gym-log-app/mac/gymsync.py" "$@"

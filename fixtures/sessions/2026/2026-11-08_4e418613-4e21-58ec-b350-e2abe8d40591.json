@@ -1,0 +1,81 @@
+{
+  "format": 1,
+  "session_id": "4e418613-4e21-58ec-b350-e2abe8d40591",
+  "revision": 7,
+  "status": "auto_closed",
+  "date": "2026-11-08",
+  "started_at": "2026-11-08T10:10:00+07:00",
+  "workout_name": "",
+  "comment": "",
+  "setup_published_at": "2026-11-02T08:15:00+07:00",
+  "app_version": "1.0.0",
+  "ended_at": "2026-11-08T10:28:00+07:00",
+  "updated_at": "2026-11-08T10:28:00+07:00",
+  "sets": [
+    {
+      "set_id": "e057a910-64e4-5449-8bef-114e7858ddef",
+      "position": 1,
+      "set_number": 1,
+      "exercise_id": "A03",
+      "exercise_name": "Test Dumbbell Press",
+      "group": "Push",
+      "type": "dumbbell",
+      "measure": "reps",
+      "weight_kg": 14,
+      "logged_at": "2026-11-08T10:14:00+07:00",
+      "reps": 12
+    },
+    {
+      "set_id": "92db1cac-f32d-5824-b991-efa52fc69718",
+      "position": 1,
+      "set_number": 2,
+      "exercise_id": "A03",
+      "exercise_name": "Test Dumbbell Press",
+      "group": "Push",
+      "type": "dumbbell",
+      "measure": "reps",
+      "weight_kg": 14,
+      "logged_at": "2026-11-08T10:17:00+07:00",
+      "reps": 12
+    },
+    {
+      "set_id": "1c73d148-e9f9-5f98-ac95-53feeb0e3fcc",
+      "position": 1,
+      "set_number": 3,
+      "exercise_id": "A03",
+      "exercise_name": "Test Dumbbell Press",
+      "group": "Push",
+      "type": "dumbbell",
+      "measure": "reps",
+      "weight_kg": 16,
+      "logged_at": "2026-11-08T10:20:00+07:00",
+      "reps": 9
+    },
+    {
+      "set_id": "c5b5c618-b004-53c9-98a4-d7a6d51d600f",
+      "position": 2,
+      "set_number": 1,
+      "exercise_id": "B04",
+      "exercise_name": "Test Barbell Row",
+      "group": "Pull",
+      "type": "barbell",
+      "measure": "reps",
+      "weight_kg": 21.25,
+      "logged_at": "2026-11-08T10:25:00+07:00",
+      "reps": 10
+    },
+    {
+      "set_id": "fa04ee74-f8da-5a79-8e32-15cfa482bdf3",
+      "position": 2,
+      "set_number": 2,
+      "exercise_id": "B04",
+      "exercise_name": "Test Barbell Row",
+      "group": "Pull",
+      "type": "barbell",
+      "measure": "reps",
+      "weight_kg": 22.5,
+      "logged_at": "2026-11-08T10:28:00+07:00",
+      "reps": 10
+    }
+  ]
+}

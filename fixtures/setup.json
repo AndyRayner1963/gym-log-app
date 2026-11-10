@@ -1,0 +1,201 @@
+{
+  "format": 1,
+  "published_at": "2026-11-02T08:15:00+07:00",
+  "hash": "b178474071a5b4d8a344959ea46ba5ef70a8f063a3358b4828f8c33a51078519",
+  "groups": [
+    "Push",
+    "Pull",
+    "Legs",
+    "Core"
+  ],
+  "exercises": [
+    {
+      "id": "A01",
+      "name": "Test Machine Press",
+      "group": "Push",
+      "type": "machine",
+      "measure": "reps",
+      "increment_kg": 5,
+      "note": "Seat at position 5",
+      "active": true
+    },
+    {
+      "id": "A02",
+      "name": "Test Cable Press",
+      "group": "Push",
+      "type": "cable",
+      "measure": "reps",
+      "increment_kg": 2.5,
+      "note": "",
+      "active": true
+    },
+    {
+      "id": "A03",
+      "name": "Test Dumbbell Press",
+      "group": "Push",
+      "type": "dumbbell",
+      "measure": "reps",
+      "increment_kg": 2,
+      "note": "Neutral grip",
+      "active": true
+    },
+    {
+      "id": "B01",
+      "name": "Test Cable Row",
+      "group": "Pull",
+      "type": "cable",
+      "measure": "reps",
+      "increment_kg": 2.5,
+      "note": "Neutral V-handle.  Seat at position 3.",
+      "active": true
+    },
+    {
+      "id": "B02",
+      "name": "Test Machine Row",
+      "group": "Pull",
+      "type": "machine",
+      "measure": "reps",
+      "increment_kg": 5,
+      "note": "",
+      "active": true
+    },
+    {
+      "id": "B03",
+      "name": "Test Assisted Pull-Up",
+      "group": "Pull",
+      "type": "assisted",
+      "measure": "reps",
+      "increment_kg": 5,
+      "note": "Neutral handles",
+      "active": true
+    },
+    {
+      "id": "B04",
+      "name": "Test Barbell Row",
+      "group": "Pull",
+      "type": "barbell",
+      "measure": "reps",
+      "increment_kg": 1.25,
+      "note": "Plates only",
+      "active": true
+    },
+    {
+      "id": "B05",
+      "name": "Test Retired Row",
+      "group": "Pull",
+      "type": "machine",
+      "measure": "reps",
+      "increment_kg": 5,
+      "note": "",
+      "active": false
+    },
+    {
+      "id": "C01",
+      "name": "Test Leg Press",
+      "group": "Legs",
+      "type": "machine",
+      "measure": "reps",
+      "increment_kg": 10,
+      "note": "Back pad at 2",
+      "active": true
+    },
+    {
+      "id": "C02",
+      "name": "Test Kettlebell Carry",
+      "group": "Legs",
+      "type": "kettlebell",
+      "measure": "time",
+      "increment_kg": 2,
+      "note": "",
+      "active": true
+    },
+    {
+      "id": "D01",
+      "name": "Test Plank",
+      "group": "Core",
+      "type": "bodyweight",
+      "measure": "time",
+      "increment_kg": 2.5,
+      "note": "",
+      "active": true
+    },
+    {
+      "id": "D02",
+      "name": "Test Bodyweight Crunch",
+      "group": "Core",
+      "type": "bodyweight",
+      "measure": "reps",
+      "increment_kg": 2.5,
+      "note": "",
+      "active": true
+    }
+  ],
+  "workouts": [
+    {
+      "name": "Test Upper",
+      "items": [
+        {
+          "order": 1,
+          "exercise_id": "A01",
+          "sets": 3,
+          "target_min": 8,
+          "target_max": 12,
+          "comment": "Slow lowering"
+        },
+        {
+          "order": 2,
+          "exercise_id": "B01",
+          "sets": 3,
+          "target_min": 10,
+          "target_max": 12,
+          "comment": "Pause at the chest"
+        },
+        {
+          "order": 3,
+          "exercise_id": "B03",
+          "sets": 3,
+          "target_min": 6,
+          "target_max": 10,
+          "comment": ""
+        },
+        {
+          "order": 4,
+          "exercise_id": "D01",
+          "sets": 3,
+          "target_min": 45,
+          "target_max": 60,
+          "comment": ""
+        }
+      ]
+    },
+    {
+      "name": "Test Lower",
+      "items": [
+        {
+          "order": 1,
+          "exercise_id": "C01",
+          "sets": 3,
+          "target_min": 10,
+          "target_max": 15,
+          "comment": ""
+        },
+        {
+          "order": 2,
+          "exercise_id": "C02",
+          "sets": 3,
+          "target_min": 60,
+          "target_max": 75,
+          "comment": "Move up at 75 s"
+        },
+        {
+          "order": 3,
+          "exercise_id": "D02",
+          "sets": 2,
+          "target_min": 15,
+          "target_max": 20,
+          "comment": ""
+        }
+      ]
+    }
+  ]
+}
