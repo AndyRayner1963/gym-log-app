@@ -145,10 +145,14 @@ export function stepper({ label, value, step, kind, small, onChange, name }) {
     type: 'text', inputmode: isWeight ? 'decimal' : 'numeric', autocomplete: 'off', enterkeyhint: 'done',
     'aria-label': label, name, placeholder: '–', spellcheck: 'false',
   });
+  // The figure's size follows its length (data-len), so 42.5 or 102.25 is never cut off.
+  const fit = () => { input.dataset.len = String(Math.min(8, Math.max(1, input.value.length))); };
   input.value = v === null || v === undefined ? '' : num(v);
+  fit();
   const set = (nv, fromTyping) => {
     v = nv;
     if (!fromTyping) input.value = v === null ? '' : num(v);
+    fit();
     onChange(v);
   };
   const minus = h('button.pm', { type: 'button', 'aria-label': `${label} down`, 'data-step': 'minus', text: '−' });
@@ -169,14 +173,14 @@ export function stepper({ label, value, step, kind, small, onChange, name }) {
     if (n !== null && !isWeight) n = Math.round(n);
     set(n, true);
   });
-  input.addEventListener('blur', () => { input.value = v === null || v === undefined ? '' : num(v); });
+  input.addEventListener('blur', () => { input.value = v === null || v === undefined ? '' : num(v); fit(); });
   input.addEventListener('focus', () => { setTimeout(() => { try { input.select(); } catch { /* ignore */ } }, 0); });
   const smallEl = h('small', { text: small || '' });
   const el = h('div.step', { 'data-kind': kind },
     h('label', { text: label }),
     h('div.ctl', minus, input, plus),
     smallEl);
-  el.setValue = nv => { v = nv; input.value = v === null || v === undefined ? '' : num(v); };
+  el.setValue = nv => { v = nv; input.value = v === null || v === undefined ? '' : num(v); fit(); };
   el.setSmall = t => { smallEl.textContent = t; };
   return el;
 }

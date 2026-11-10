@@ -97,18 +97,30 @@ button.ex.row { display: flex; align-items: center; gap: 12px; min-height: 60px;
 .addset { display: block; min-height: 44px; min-width: 64px; margin-top: 2px; background: none; border: 0; color: var(--muted); font: 600 14px var(--font); padding: 0 12px 0 2px; text-align: left; }
 
 /* ---- Entry dock ---- */
-.dock { flex: none; background: var(--sheet); border-top: 1px solid var(--line); border-radius: 22px 22px 0 0; padding: 12px 16px calc(6px + var(--sb)); }
+.dock { flex: none; background: var(--sheet); border-top: 1px solid var(--line); border-radius: 22px 22px 0 0; padding: 12px 12px calc(6px + var(--sb)); }
 .dock .title { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; color: var(--muted); }
 .dock .title b { color: var(--text); font-size: 15px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock .title span { flex: none; font-variant-numeric: tabular-nums; }
 .dock .msg { font-size: 14px; color: var(--muted); margin-top: 10px; line-height: 1.45; }
-.steps { display: flex; gap: 10px; margin-top: 10px; }
-.step { flex: 1; min-width: 0; background: var(--card); border-radius: 16px; padding: 8px 8px 10px; }
+.steps { display: flex; gap: 8px; margin-top: 10px; }
+.step { flex: 1; min-width: 0; background: var(--card); border-radius: 16px; padding: 8px 2px 10px; }
 .step label { display: block; text-align: center; font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--faint); text-transform: uppercase; }
-.step .ctl { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin-top: 4px; }
+.step .ctl { display: flex; align-items: center; justify-content: space-between; gap: 0; margin-top: 4px; container-type: inline-size; }
 .pm { flex: none; width: 56px; height: 56px; border-radius: 14px; border: 0; background: var(--card2); color: var(--text); font: 500 30px var(--font); line-height: 1; }
 .pm:active { background: #2E343B; }
-.val { width: 100%; min-width: 0; flex: 1; text-align: center; background: none; border: 0; border-radius: 10px; font: 700 38px var(--font); letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--text); padding: 2px 0; height: 56px; }
+/* The figure sits between two 56 px buttons.  Its size follows its length (data-len, set by the
+   stepper): as large as 38 px while it fits, never below 16 px (iOS zooms a field under 16 px).
+   Width available = the row (100cqw) minus the two buttons; about 0.64 em per character. */
+.val { width: 100%; min-width: 0; flex: 1; text-align: center; background: none; border: 0; border-radius: 10px; font-family: var(--font); font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: var(--text); padding: 2px 0; height: 56px;
+  --chars: 1.92; font-size: 38px; font-size: max(16px, min(38px, calc((100cqw - 112px) / var(--chars)))); }
+.val[data-len="1"] { --chars: 0.64; }
+.val[data-len="2"] { --chars: 1.28; }
+.val[data-len="3"] { --chars: 1.92; }
+.val[data-len="4"] { --chars: 2.56; }
+.val[data-len="5"] { --chars: 3.2; }
+.val[data-len="6"] { --chars: 3.84; }
+.val[data-len="7"] { --chars: 4.48; }
+.val[data-len="8"] { --chars: 5.12; }
 .val:focus { outline: none; background: #101214; box-shadow: inset 0 0 0 1.5px var(--go); }
 .val::placeholder { color: var(--faint); }
 .step small { display: block; text-align: center; font-size: 11px; color: var(--faint); margin-top: 3px; font-variant-numeric: tabular-nums; }
@@ -210,3 +222,24 @@ textarea.field { resize: none; line-height: 1.4; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
 .hidden { display: none !important; }
+
+/* ---- Active Workout: the current exercise fills the middle ---- */
+.head.workout { gap: 10px; }
+.head.workout .titles { flex: 1; }
+.head.workout h1 { font-size: 24px; }
+.subhead { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 18px 8px 12px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.exlist { min-height: 44px; min-width: 44px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-radius: 12px; border: 1.5px solid var(--line); background: var(--card); color: var(--text); font: 600 14px var(--font); font-variant-numeric: tabular-nums; }
+.exlist i { font-style: normal; color: var(--muted); font-size: 12px; }
+.exlist:disabled { color: var(--faint); }
+.main.focus { overflow: hidden; padding: 10px 12px 10px; }
+.ex.current.fill { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-bottom: 0; }
+.ex.current.fill.empty { justify-content: center; }
+.setlist { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; position: relative; margin: 0 -14px; padding: 0 14px; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.next { flex: none; display: flex; align-items: center; gap: 8px; min-height: 48px; margin: 0 -14px; padding: 0 14px; width: calc(100% + 28px); border: 0; border-top: 1px solid var(--line); background: #15181B; border-radius: 0 0 14px 14px; color: var(--text); font: 500 14px var(--font); text-align: left; }
+.next .k { flex: none; font-size: 14px; font-weight: 600; color: var(--muted); }
+.next .v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.next i { flex: none; font-style: normal; color: var(--go); font-size: 20px; }
+.next.none .v { color: var(--muted); white-space: normal; }
+.opt.slot-opt { min-height: 60px; }
+.opt.slot-opt.current { box-shadow: inset 0 0 0 1.5px #3A4048; }
+.tag.now { color: var(--go); }

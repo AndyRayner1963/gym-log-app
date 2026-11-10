@@ -87,7 +87,7 @@ test('App 2: reload mid-session returns the same session, sets and current exerc
   await begin(page);
   await H.logSet(page);
   await H.logSet(page);
-  await page.click('button.ex.row[data-slot="3"]');
+  await H.goSlot(page, 3);
   await page.waitForSelector('.ex.current[data-slot="3"]');
   await H.setEntry(page, 30, 7);
   await H.waitFor(async () => { const o = await H.openSession(page); return o.ui.draft && o.ui.draft.weight === 30 && o.ui.draft.value === 7; }, { message: 'draft saved' });
@@ -102,7 +102,10 @@ test('App 2: reload mid-session returns the same session, sets and current exerc
   const e = await H.entryValues(page);
   assert.equal(e.weight, '30');
   assert.equal(e.value, '7');
-  assert.equal(await page.locator('.ex.row[data-slot="1"] .num.done').count(), 0, 'slot 1 has 2 of 3 sets, not done');
+  const info = await H.panelInfo(page);
+  assert.equal(info.find(i => i.slot === 1).done, false, 'slot 1 has 2 of 3 sets, not done');
+  assert.match(info.find(i => i.slot === 1).text, /2 of 3 sets/);
+  assert.equal(info.find(i => i.slot === 3).current, true);
   assert.deepEqual(app.errors, []);
   await app.close();
 });
@@ -198,7 +201,7 @@ test('App 5: pre-fill rules 1, 2 and 3, for both measures', async () => {
   e = await H.entryValues(page);
   assert.deepEqual([e.weight, e.value], ['140', '10']);
   // Rule 1, time: Test Kettlebell Carry, 9 Nov set 1: 28 kg × 75 s (not 5 Nov: 70 s).
-  await page.click('button.ex.row[data-slot="2"]');
+  await H.goSlot(page, 2);
   await page.waitForSelector('.dock input[name=seconds]');
   e = await H.entryValues(page);
   assert.deepEqual([e.weight, e.value], ['28', '75']);
@@ -223,7 +226,7 @@ test('App 5: pre-fill rules 1, 2 and 3, for both measures', async () => {
   e = await H.entryValues(page);
   assert.deepEqual([e.weight, e.value, e.logDisabled], ['5', '1', false]);
   // Time measure, blank: Test Plank.
-  await page.click('button.ex.row[data-slot="4"]');
+  await H.goSlot(page, 4);
   await page.waitForSelector('.dock input[name=seconds]');
   e = await H.entryValues(page);
   assert.deepEqual([e.weight, e.value, e.logDisabled], ['', '', true]);
@@ -258,7 +261,7 @@ test('App 6: swap mid-exercise: logged sets keep the first exercise; later sets 
   const app = await start();
   const { page } = app;
   await begin(page);
-  await page.click('button.ex.row[data-slot="2"]');
+  await H.goSlot(page, 2);
   await page.waitForSelector('.ex.current[data-slot="2"]');
   let e = await H.entryValues(page);
   assert.deepEqual([e.weight, e.value], ['45', '12']);
@@ -286,7 +289,7 @@ test('App 6: swap mid-exercise: logged sets keep the first exercise; later sets 
     [3, 'B01', 'Test Cable Row', 'B02', 'Test Machine Row', 'machine', 'Pull'],
   ]);
   // Swap back is possible and destroys nothing.
-  await page.click('button.ex.row[data-slot="2"]');
+  await H.goSlot(page, 2);
   await page.click('[data-action=swap]');
   assert.ok(await page.$('[data-sheet=swap] [data-ex=B01]'), 'the planned exercise is offered to swap back');
   await page.click('[data-sheet=swap] [data-action=cancel]');
@@ -302,8 +305,8 @@ test('App 7: an extra set beyond the plan is numbered and stored', async () => {
   await H.logSet(page);
   await H.logSet(page);
   await page.waitForSelector('.ex.current[data-slot="2"]');
-  assert.ok(await page.$('.ex.row[data-slot="1"] .num.done'));
-  await page.click('button.ex.row[data-slot="1"]');
+  assert.ok((await H.panelInfo(page)).find(i => i.slot === 1).done, 'slot 1 ticked');
+  await H.goSlot(page, 1);
   await page.waitForSelector('[data-dock=complete]');
   await page.click('[data-action=add-set-dock]');
   await page.waitForSelector('[data-dock=entry]');
@@ -313,7 +316,7 @@ test('App 7: an extra set beyond the plan is numbered and stored', async () => {
   assert.deepEqual([e.weight, e.value], [String(set3.weight_kg), String(set3.reps)], 'extra set pre-filled by rule 2');
   await H.logSet(page);
   // And one more with the in-card "+ Set".
-  await page.click('button.ex.row[data-slot="1"]');
+  await H.goSlot(page, 1);
   await page.waitForSelector('.ex.current[data-slot="1"]');
   await page.click('.ex.current [data-action=add-set]');
   await H.logSet(page);
@@ -506,7 +509,7 @@ test('App 12: stopwatch: start, wait with the page hidden, stop; the seconds mat
   const app = await start();
   const { page } = app;
   await begin(page);
-  await page.click('button.ex.row[data-slot="4"]');
+  await H.goSlot(page, 4);
   await page.waitForSelector('[data-action=stopwatch]');
   await page.click('[data-action=stopwatch]');
   await page.waitForSelector('.watch.running');
@@ -555,12 +558,12 @@ test('App 13: a setup refresh during a session does not alter that session', asy
   await page.click('[data-action=back]');
   await page.waitForSelector('#app[data-view=workout]');
   assert.match(await page.textContent('.ex.current .name'), /^Test Machine Press$/);
-  assert.match(await page.textContent('.ex.row[data-slot="2"] .meta'), /3 × 10–12 reps/);
-  await page.click('button.ex.row[data-slot="2"]');
+  assert.match((await H.panelInfo(page)).find(i => i.slot === 2).text, /3 × 10–12 reps/);
+  await H.goSlot(page, 2);
   await page.waitForSelector('.ex.current[data-slot="2"]');
   assert.match(await page.textContent('.ex.current .notes'), /Neutral V-handle/);
   assert.doesNotMatch(await page.textContent('.ex.current .notes'), /A new note/);
-  await page.click('button.ex.row[data-slot="1"]');
+  await H.goSlot(page, 1);
   await page.waitForSelector('.ex.current[data-slot="1"]');
   await H.logSet(page);
   const during = await H.openSession(page);
@@ -572,7 +575,7 @@ test('App 13: a setup refresh during a session does not alter that session', asy
   // The next session uses the new setup.
   await begin(page);
   assert.match(await page.textContent('.ex.current .name'), /^Test Machine Press Renamed$/);
-  assert.match(await page.textContent('.ex.row[data-slot="2"] .meta'), /5 × 10–12 reps/);
+  assert.match((await H.panelInfo(page)).find(i => i.slot === 2).text, /5 × 10–12 reps/);
   assert.equal((await H.openSession(page)).doc.setup_published_at, s2.published_at);
   await app.close();
 });
@@ -600,7 +603,7 @@ test('App 14: nothing is requested from any address other than the app\u2019s ow
   await page.click('[data-sheet=add] [data-ex=D01]');
   await H.logSet(page);
   const setId = (await H.openSession(page)).doc.sets[0].set_id;
-  await page.click('button.ex.row[data-slot="1"]');
+  await H.goSlot(page, 1);
   await page.click(`[data-set="${setId}"]`);
   await page.click('[data-sheet=edit] .steps [data-kind=reps] [data-step=plus]');
   await page.click('[data-sheet=edit] [data-action=save]');
@@ -641,12 +644,12 @@ test('Contract: a session file made by the app matches the fixture shape', async
   await H.logSet(page);
   await H.logSet(page);
   await page.waitForSelector('.ex.current[data-slot="2"]');
-  await page.click('button.ex.row[data-slot="1"]');
+  await H.goSlot(page, 1);
   await page.waitForSelector('[data-dock=complete]');
   await page.click('.ex.current [data-action=add-set]');
   await page.waitForSelector('[data-dock=entry]');
   await H.logSet(page);
-  await page.click('button.ex.row[data-slot="4"]');
+  await H.goSlot(page, 4);
   await page.waitForSelector('.ex.current[data-slot="4"]');
   await H.logSet(page);
   await page.click('[data-action=add-exercise]');
@@ -654,7 +657,7 @@ test('Contract: a session file made by the app matches the fixture shape', async
   await page.click('[data-sheet=add] [data-ex=C02]');
   await H.logSet(page);
   const first = (await H.openSession(page)).doc.sets[0].set_id;
-  await page.click('button.ex.row[data-slot="1"]');
+  await H.goSlot(page, 1);
   await page.click(`[data-set="${first}"]`);
   await page.click('[data-sheet=edit] .steps [data-kind=weight] [data-step=plus]');
   await page.click('[data-sheet=edit] [data-action=save]');
@@ -917,7 +920,16 @@ test('Tap targets: every button and tappable row on every screen is at least 44 
   await begin(page);
   await H.logSet(page);
   await measure('Active Workout (reps)');
-  await page.click('button.ex.row[data-slot="4"]');
+  await page.click('[data-action=exercises]');
+  await page.waitForSelector('[data-sheet=exercises]');
+  await measure('Exercises panel');
+  await page.click('[data-sheet=exercises] [data-action=cancel]');
+  await page.click('[data-action=home]');
+  await page.waitForSelector('[data-action=resume]');
+  await measure('Home (workout open)');
+  await page.click('[data-action=resume]');
+  await page.waitForSelector('#app[data-view=workout]');
+  await H.goSlot(page, 4);
   await page.waitForSelector('[data-action=stopwatch]');
   await measure('Active Workout (time)');
   await page.click('[data-action=stopwatch]');
@@ -935,7 +947,7 @@ test('Tap targets: every button and tappable row on every screen is at least 44 
   await page.waitForSelector('[data-sheet=add] [data-ex]');
   await measure('Add Exercise (exercises)');
   await page.click('[data-sheet=add] [data-action=cancel]');
-  await page.click('button.ex.row[data-slot="1"]');
+  await H.goSlot(page, 1);
   const setId = (await H.openSession(page)).doc.sets[0].set_id;
   await page.click(`[data-set="${setId}"]`);
   await page.waitForSelector('[data-sheet=edit]');
@@ -1044,6 +1056,194 @@ test('Lost connection (e): after a background/foreground cycle the connection is
   await H.waitFor(() => page.evaluate(() => window.__idbConns.length >= 1), { message: 'connection reopened on pageshow' });
   await H.logSet(page);
   assert.equal((await H.openSession(page)).doc.sets.length, 3);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// Layout: the figure fits, the current exercise fills the middle, Home during a workout.
+
+/** Is the whole figure visible?  Both the input's own overflow and the measured text width. */
+async function figureFits(page, selector) {
+  return page.evaluate(sel => {
+    const el = document.querySelector(sel);
+    const cs = getComputedStyle(el);
+    const ctx = document.createElement('canvas').getContext('2d');
+    ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const text = ctx.measureText(el.value).width * (1 + parseFloat(cs.letterSpacing || 0) / parseFloat(cs.fontSize) || 1);
+    return { value: el.value, scroll: el.scrollWidth, client: el.clientWidth, text: Math.ceil(ctx.measureText(el.value).width), size: parseFloat(cs.fontSize) };
+  }, selector);
+}
+
+test('Stepper figure: 42.5, 122.5, 21.25, 102.25 and 120 s show whole in the dock and in Edit Set at 430 and 390 px', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  const bad = [];
+  for (const width of [430, 390]) {
+    await page.setViewportSize({ width, height: width === 430 ? 932 : 844 });
+    await H.goSlot(page, 1);
+    for (const v of ['42.5', '122.5', '21.25', '102.25', '45', '120']) {
+      // While typing: character by character, checked after every keystroke.
+      await page.fill('.dock input[name=weight]', '');
+      for (const ch of v) {
+        await page.type('.dock input[name=weight]', ch);
+        const f = await figureFits(page, '.dock input[name=weight]');
+        if (f.scroll > f.client || f.text > f.client) bad.push(`${width}px dock typing ${f.value}: text ${f.text}, box ${f.client}, scroll ${f.scroll}`);
+        if (f.size < 16) bad.push(`${width}px dock ${f.value}: font ${f.size}px < 16`);
+      }
+      const f = await figureFits(page, '.dock input[name=weight]');
+      if (width === 430 && v.length <= 3 && f.size !== 38) bad.push(`430px: ${v} should be full size, is ${f.size}px`);
+    }
+    // Seconds on a time exercise, set with the buttons.
+    await H.goSlot(page, 4);
+    await page.fill('.dock input[name=seconds]', '115');
+    await page.click('.dock [data-kind=secs] [data-step=plus]');
+    let f = await figureFits(page, '.dock input[name=seconds]');
+    assert.equal(f.value, '120');
+    if (f.scroll > f.client || f.text > f.client) bad.push(`${width}px seconds 120 cut`);
+    // Edit Set panel.
+    await H.goSlot(page, 1);
+    const setId = (await H.openSession(page)).doc.sets[0].set_id;
+    await page.click(`[data-set="${setId}"]`);
+    await page.waitForSelector('[data-sheet=edit]');
+    for (const v of ['42.5', '122.5', '21.25', '102.25']) {
+      await page.fill('[data-sheet=edit] input[name=edit-weight]', v);
+      f = await figureFits(page, '[data-sheet=edit] input[name=edit-weight]');
+      if (f.scroll > f.client || f.text > f.client) bad.push(`${width}px edit ${v}: text ${f.text}, box ${f.client}, scroll ${f.scroll}`);
+    }
+    // The + button never pushes the figure out either (42.5 → 45 → ... with 2.5 steps on 102.25).
+    await page.fill('[data-sheet=edit] input[name=edit-weight]', '99.75');
+    await page.click('[data-sheet=edit] [data-kind=weight] [data-step=plus]');
+    f = await figureFits(page, '[data-sheet=edit] input[name=edit-weight]');
+    if (f.scroll > f.client || f.text > f.client) bad.push(`${width}px edit after + ${f.value} cut`);
+    await page.click('[data-sheet=edit] [data-action=cancel]');
+    // The − and + buttons keep their size.
+    const pm = await page.locator('.dock .pm').first().boundingBox();
+    assert.deepEqual([pm.width, pm.height], [56, 56]);
+  }
+  assert.deepEqual(bad, []);
+  await app.close();
+});
+
+test('Workout layout: the current exercise fills the middle; sets scroll inside it; Next line; Exercises panel', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  // The current card fills the space between the strip and the dock; there is no list behind it.
+  const geo = await page.evaluate(() => {
+    const r = s => document.querySelector(s).getBoundingClientRect();
+    return { strip: r('#strip').bottom, card: r('.ex.current'), dock: r('.dock').top, cards: document.querySelectorAll('#app .ex').length };
+  });
+  assert.equal(geo.cards, 1, 'only the current exercise is drawn');
+  assert.ok(geo.card.top - geo.strip <= 16 && geo.dock - geo.card.bottom <= 16, `card fills the middle (${JSON.stringify(geo)})`);
+  assert.equal(norm(await page.innerText('[data-action=exercises]')), 'Exercises 1 of 4 ▾');
+  // Next line.
+  assert.equal(norm(await page.innerText('[data-action=next]')), 'Next: Test Cable Row · 3 × 10–12 reps ›');
+  await page.click('[data-action=next]');
+  await page.waitForSelector('.ex.current[data-slot="2"]');
+  assert.equal(norm(await page.innerText('[data-action=exercises]')), 'Exercises 2 of 4 ▾');
+  assert.match(norm(await page.innerText('[data-action=next]')), /^Next: Test Assisted Pull-Up · 3 × 6–10 reps/);
+  // Many sets: the list scrolls inside the card, the card and the Next line stay put.
+  await H.goSlot(page, 1);
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  for (let i = 0; i < 6; i++) {
+    await H.goSlot(page, 1);   // after each extra set the panel moves on to the next exercise
+    await page.click('[data-dock=complete] [data-action=add-set-dock]');
+    await H.logSet(page);
+  }
+  await H.goSlot(page, 1);
+  const inner = await page.evaluate(() => {
+    const l = document.querySelector('.setlist');
+    const card = document.querySelector('.ex.current').getBoundingClientRect();
+    const next = document.querySelector('.next').getBoundingClientRect();
+    const dock = document.querySelector('.dock').getBoundingClientRect();
+    return { scrolls: l.scrollHeight > l.clientHeight, scrolled: l.scrollTop > 0, nextInCard: next.bottom <= card.bottom + 1, cardAboveDock: card.bottom <= dock.top, pageScroll: document.querySelector('#app .main').scrollHeight <= document.querySelector('#app .main').clientHeight + 1 };
+  });
+  assert.deepEqual(inner, { scrolls: true, scrolled: true, nextInCard: true, cardAboveDock: true, pageScroll: true });
+  // Exercises panel: every exercise in order, progress, the current one marked; tap one; Cancel.
+  const info = await H.panelInfo(page);
+  assert.deepEqual(info.map(i => i.slot), [1, 2, 3, 4]);
+  assert.match(info[0].text, /Test Machine Press\s*now 9 of 9 sets/);
+  assert.equal(info[0].current, true);
+  assert.equal(info[0].done, true);
+  assert.match(info[1].text, /Test Cable Row 0?.*not started · 3 × 10–12 reps/);
+  await page.click('[data-action=exercises]');
+  await page.click('[data-sheet=exercises] [data-slot="3"]');
+  await page.waitForSelector('[data-sheet=exercises]', { state: 'detached' });
+  await page.waitForSelector('.ex.current[data-slot="3"]');
+  // All planned sets logged: the Next line says so, and the dock offers + Set.
+  for (const pos of [3, 4, 2]) {
+    await H.goSlot(page, pos);
+    for (let i = 0; i < 3; i++) await H.logSet(page);
+  }
+  await page.waitForSelector('[data-dock=complete]');
+  assert.match(norm(await page.innerText('[data-next=none]')), /^Next: nothing left — all planned sets logged$/);
+  assert.match(norm((await H.panelInfo(page)).map(i => i.text).join(' | ')), /3 of 3 sets.*3 of 3 sets.*3 of 3 sets/);
+  // Free-form: the same layout; the panel lists the exercises added so far.
+  await endWorkout(page);
+  await begin(page, '');
+  await page.click('[data-sheet=add] [data-group=Core]');
+  await page.click('[data-sheet=add] [data-ex=D02]');
+  await page.waitForSelector('.ex.current[data-slot="1"]');
+  await page.click('[data-action=add-exercise]');
+  await page.click('[data-sheet=add] [data-group=Push]');
+  await page.click('[data-sheet=add] [data-ex=A01]');
+  await page.waitForSelector('.ex.current[data-slot="2"]');
+  const free = await H.panelInfo(page);
+  assert.deepEqual(free.map(i => [i.slot, i.current]), [[1, false], [2, true]]);
+  assert.match(free[0].text, /Test Bodyweight Crunch.*not started/);
+  assert.match(norm(await page.innerText('[data-next=none]')), /^Next: add another exercise below when ready$/);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('Home during a workout: Home button keeps the session open; Resume card; starts disabled; auto-close still applies', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  const id = (await H.openSession(page)).id;
+  const hb = await page.locator('[data-action=home]').boundingBox();
+  assert.ok(hb.x < 40 && hb.y < 40 && hb.width >= 44 && hb.height >= 44, 'Home is at the top left, at least 44 × 44');
+  await page.click('[data-action=home]');
+  await page.waitForSelector('#app[data-view=home]');
+  assert.equal(await page.$('#dialogs .box'), null, 'no confirmation box');
+  assert.equal((await H.openSession(page)).id, id, 'the session is still open');
+  assert.equal(norm(await page.innerText('[data-action=resume]')), 'Resume Test Upper 1 set logged · started 16:30 ›');
+  const first = await page.evaluate(() => document.querySelector('#app .main').firstElementChild.dataset.action);
+  assert.equal(first, 'resume', 'the Resume card is at the top');
+  assert.ok(await page.$eval('[data-workout="Test Lower"]', b => b.disabled));
+  assert.ok(await page.$eval('[data-workout=""]', b => b.disabled));
+  assert.equal(norm(await page.innerText('[data-hint=one-open]')), 'End the open workout to start another.');
+  // History and Settings are reachable.
+  await page.click('[data-nav=history]');
+  await page.waitForSelector('#app[data-view=history]');
+  await page.click('[data-action=back]');
+  await page.click('[data-nav=settings]');
+  await page.waitForSelector('#app[data-view=settings]');
+  await page.click('[data-action=back]');
+  await page.waitForSelector('#app[data-view=home]');
+  // Resume returns to the same workout and exercise.
+  await page.click('[data-action=resume]');
+  await page.waitForSelector('#app[data-view=workout]');
+  assert.equal((await H.openSession(page)).doc.sets.length, 1);
+  // A cold start with an open session goes straight to the workout.
+  await page.click('[data-action=home]');
+  await page.reload();
+  await H.ready(page);
+  assert.equal(await page.getAttribute('#app', 'data-view'), 'workout');
+  // Auto-close applies while on Home.
+  await page.click('[data-action=home]');
+  await page.waitForSelector('[data-action=resume]');
+  await page.clock.fastForward('02:01:00');
+  await setVisibility(page, 'hidden');
+  await setVisibility(page, 'visible');
+  await page.waitForSelector('[data-action=resume]', { state: 'detached' });
+  assert.equal((await H.readDB(page)).sessions.find(s => s.id === id).doc.status, 'auto_closed');
+  assert.equal(await page.$eval('[data-workout="Test Lower"]', b => b.disabled), false);
+  assert.equal(await page.$('[data-hint=one-open]'), null);
   assert.deepEqual(app.errors, []);
   await app.close();
 });

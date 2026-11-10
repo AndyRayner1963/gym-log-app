@@ -32,7 +32,21 @@ const OUT = path.join(__dirname, 'screenshots');
   for (let i = 0; i < 3; i++) await H.logSet(page, { advance: 180000 });
   await H.logSet(page, { advance: 240000 });
   await page.clock.fastForward(120000);
+  await H.setEntry(page, 42.5);
   await shot('02-active-workout');
+
+  // Exercises panel.
+  await page.click('[data-action=exercises]');
+  await page.waitForSelector('[data-sheet=exercises]');
+  await shot('02b-exercises-panel');
+  await page.click('[data-sheet=exercises] [data-action=cancel]');
+
+  // Home with the workout still open.
+  await page.click('[data-action=home]');
+  await page.waitForSelector('[data-action=resume]');
+  await shot('01b-home-workout-open');
+  await page.click('[data-action=resume]');
+  await page.waitForSelector('#app[data-view=workout]');
 
   // Swap panel.
   await page.click('[data-action=swap]');
@@ -44,6 +58,7 @@ const OUT = path.join(__dirname, 'screenshots');
   const setId = (await H.openSession(page)).doc.sets.find(s => s.position === 2).set_id;
   await page.click(`[data-set="${setId}"]`);
   await page.waitForSelector('[data-sheet=edit]');
+  await page.fill('[data-sheet=edit] input[name=edit-weight]', '102.25');
   await shot('06-edit-set-panel');
   await page.click('[data-sheet=edit] [data-action=cancel]');
 
@@ -56,7 +71,7 @@ const OUT = path.join(__dirname, 'screenshots');
   await page.click('[data-sheet=add] [data-action=cancel]');
 
   // Time exercise with the stopwatch running.
-  await page.click('button.ex.row[data-slot="4"]');
+  await H.goSlot(page, 4);
   await page.waitForSelector('[data-action=stopwatch]');
   await page.click('[data-action=stopwatch]');
   await page.clock.fastForward(42000);

@@ -161,6 +161,27 @@ async function entryValues(page) {
   });
 }
 
+/** Make slot n current through the Exercises panel (the only list of exercises on the workout screen). */
+async function goSlot(page, n) {
+  await page.click('[data-action=exercises]');
+  await page.waitForSelector('[data-sheet=exercises]');
+  await page.click(`[data-sheet=exercises] [data-slot="${n}"]`);
+  await page.waitForSelector('[data-sheet=exercises]', { state: 'detached' });
+  await page.waitForSelector(`.ex.current[data-slot="${n}"]`);
+}
+
+/** What the Exercises panel shows: [{slot, done, current, text}], then closes it with Cancel. */
+async function panelInfo(page) {
+  await page.click('[data-action=exercises]');
+  await page.waitForSelector('[data-sheet=exercises]');
+  const info = await page.evaluate(() => [...document.querySelectorAll('[data-sheet=exercises] [data-slot]')].map(e => ({
+    slot: Number(e.dataset.slot), done: !!e.querySelector('.num.done'), current: e.getAttribute('aria-current') === 'true', text: e.innerText.replace(/\s+/g, ' ').trim(),
+  })));
+  await page.click('[data-sheet=exercises] [data-action=cancel]');
+  await page.waitForSelector('[data-sheet=exercises]', { state: 'detached' });
+  return info;
+}
+
 /** Close every database connection the page holds, without telling the app.  Returns how many. */
 async function closeConnections(page) {
   return page.evaluate(() => { const n = window.__idbConns.length; for (const c of window.__idbConns) c.close(); window.__idbConns = []; return n; });
@@ -170,5 +191,5 @@ async function strip(page) { return (await page.textContent('#strip')).replace(/
 
 module.exports = {
   FakeGitHub, SETUP, FIXTURE_SESSIONS, fixtureDoc, closedFixtureDocs, T0, VIEWPORT, SETTINGS,
-  env, closeEnv, openApp, ready, seed, readDB, openSession, waitFor, logSet, setEntry, entryValues, strip, closeConnections,
+  env, closeEnv, openApp, ready, seed, readDB, openSession, waitFor, logSet, setEntry, entryValues, strip, closeConnections, goSlot, panelInfo,
 };

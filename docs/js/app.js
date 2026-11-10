@@ -302,8 +302,9 @@ function render() {
   if (main) main.scrollTop = keep;
   if (state.view === 'workout' && state.scrollToCurrent) {
     state.scrollToCurrent = false;
-    const cur = app.querySelector('.ex.current');
-    if (cur) cur.scrollIntoView({ block: 'nearest' });
+    const list = app.querySelector('.setlist');
+    const row = list && (list.querySelector('.set.active') || list.lastElementChild);
+    if (list && row) list.scrollTop = Math.max(0, row.offsetTop + row.offsetHeight - list.clientHeight + 8);
   }
 }
 
@@ -380,33 +381,35 @@ function homeView() {
         h('button.btn.secondary', { type: 'button', onclick: () => { state.offerRestore = false; render(); } }, 'Not now'),
         h('button.btn.primary', { type: 'button', 'data-action': 'restore', disabled: state.restoring, onclick: doRestore }, state.restoring ? 'Downloading…' : 'Download history'))));
   }
-  if (state.open) {
-    const d = state.open.doc;
-    items.push(h('div.section-title', 'In progress'));
-    items.push(h('button.choice.resume', { type: 'button', 'data-action': 'resume', onclick: () => go('workout') },
-      h('div.info', h('div.name', d.workout_name || 'Free-form'),
-        h('div.meta', `Started ${U.hhmm(d.started_at)} · ${U.plural(d.sets.length, 'set', 'sets')} logged`)),
+  const open = state.open;
+  if (open) {
+    const d = open.doc;
+    items.unshift(h('button.choice.resume', { type: 'button', 'data-action': 'resume', onclick: () => go('workout') },
+      h('div.info', h('div.name', `Resume ${d.workout_name || 'Free-form'}`),
+        h('div.meta', `${U.plural(d.sets.length, 'set', 'sets')} logged · started ${U.hhmm(d.started_at)}`)),
       h('span.go', '›')));
-  } else if (setup) {
+  }
+  if (setup) {
     items.push(h('div.section-title', 'Start a workout'));
+    if (open) items.push(h('p.hint', { 'data-hint': 'one-open' }, 'End the open workout to start another.'));
     const hist = history();
     for (const w of setup.workouts) {
       const last = hist.find(d => d.workout_name === w.name);
       const n = w.items.length;
-      items.push(h('button.choice', { type: 'button', 'data-workout': w.name, onclick: () => startWorkout(w.name) },
+      items.push(h('button.choice', { type: 'button', 'data-workout': w.name, disabled: !!open, onclick: () => startWorkout(w.name) },
         h('div.info', h('div.name', w.name),
           h('div.meta', `${U.plural(n, 'exercise', 'exercises')} · ${last ? `last done ${U.dayMon(last.started_at)}` : 'not done yet'}`)),
         h('span.go', '›')));
     }
-    items.push(h('button.choice', { type: 'button', 'data-workout': '', onclick: () => startWorkout(null) },
+    items.push(h('button.choice', { type: 'button', 'data-workout': '', disabled: !!open, onclick: () => startWorkout(null) },
       h('div.info', h('div.name', 'Free-form'), h('div.meta', 'Choose exercises as you go')),
       h('span.go', '›')));
   }
   items.push(h('p.hint', { 'data-queue': String(q.sessions) },
     q.sessions ? `${U.plural(q.sessions, 'session', 'sessions')} waiting to upload` : 'No sessions waiting to upload'));
-  const sub = setup ? `Setup published ${U.dayMonTime(setup.published_at)}` : 'No setup yet';
+  // The setup's age is in the strip below; the header only carries the name.
   return [
-    h('header.head', h('div.titles', h('h1', 'Swole'), h('p', sub))),
+    h('header.head', h('div.titles', h('h1', 'Swole'))),
     stripEl(),
     h('main.main', items),
     h('nav.navrow',
@@ -468,16 +471,53 @@ function planText(slot, ex, long) {
 function workoutView() {
   const rec = state.open;
   const doc = rec.doc;
-  const cards = rec.slots.map(slot => (slot.position === rec.ui.current ? currentCard(slot) : rowCard(slot)));
-  if (!cards.length) cards.push(h('p.hint', 'No exercises yet.  Use + Add exercise below.'));
+  const slot = curSlot();
+  const order = [...rec.slots].sort((a, b) => a.position - b.position);
+  const idx = slot ? order.findIndex(s => s.position === slot.position) + 1 : 0;
+  const exBtn = h('button.exlist', {
+    type: 'button', 'data-action': 'exercises', disabled: !order.length, onclick: openExercises,
+    'aria-label': order.length ? `Exercises, ${idx} of ${order.length}.  Show all` : 'No exercises yet',
+  }, order.length ? `Exercises ${idx} of ${order.length}` : 'No exercises yet', h('i', '▾'));
   return [
-    h('header.head',
-      h('div.titles', h('h1', doc.workout_name || 'Free-form'), h('p', { id: 'elapsed' }, elapsedText(doc))),
+    h('header.head.workout',
+      h('button.back.home', { type: 'button', 'data-action': 'home', 'aria-label': 'Home (the workout stays open)', onclick: () => go('home') }, '‹ Home'),
+      h('div.titles', h('h1', doc.workout_name || 'Free-form')),
       h('button.end', { type: 'button', 'data-action': 'end', onclick: endWorkout }, 'End Workout')),
+    h('div.subhead', exBtn, h('span', { id: 'elapsed' }, elapsedText(doc))),
     stripEl(),
-    h('main.main.list', cards),
+    h('main.main.focus', slot ? currentCard(slot) : h('div.ex.current.fill.empty', h('p.hint', 'No exercises yet.  Use + Add exercise below.'))),
     dockEl(),
   ];
+}
+
+/** Progress of a slot for lists: "3 of 3 sets", "1 of 3 sets", "2 sets", "not started". */
+function progressText(rec, slot) {
+  const n = M.slotSets(rec.doc, slot.position).length;
+  const p = M.slotPlanned(slot);
+  if (!n) return 'not started';
+  return p ? `${n} of ${p} sets` : U.plural(n, 'set', 'sets');
+}
+
+/** The "Exercises" panel: every exercise in the session, in order; tap one to make it current. */
+function openExercises() {
+  const rec = state.open;
+  if (!rec) return;
+  const order = [...rec.slots].sort((a, b) => a.position - b.position);
+  openSheet('exercises', [
+    h('h2', 'Exercises'),
+    h('p.sub', `${U.plural(order.length, 'exercise', 'exercises')} in this workout.  Tap one to do it now.`),
+    order.map(slot => {
+      const ex = exOf(rec, slot.exercise_id);
+      const done = M.slotComplete(rec, slot);
+      const cur = slot.position === rec.ui.current;
+      const meta = [progressText(rec, slot), planText(slot, ex, false)].filter(Boolean).join(' · ');
+      return h(`button.opt.slot-opt${cur ? '.current' : ''}`, { type: 'button', 'data-slot': String(slot.position), 'aria-current': cur ? 'true' : null,
+        onclick: async () => { await makeCurrent(slot.position); closeSheet(); } },
+        h(`div.num${done ? '.done' : cur ? '.now' : ''}`, done ? '✓' : String(slot.position)),
+        h('div.info', h('div.name', ex.name, cur ? h('span.tag.now', 'now') : null), h('div.hist', meta)));
+    }),
+    h('button.cancel', { type: 'button', 'data-action': 'cancel', onclick: closeSheet }, 'Cancel'),
+  ]);
 }
 
 function shortSet(s) {
@@ -485,22 +525,6 @@ function shortSet(s) {
   const v = s.measure === 'time' ? `${U.num(s.duration_s)} s` : U.num(s.reps);
   if (s.type === 'bodyweight' && !(s.weight_kg > 0) && s.measure === 'time') return v;
   return `${U.weightShort(s.type, s.weight_kg)} × ${v}`;
-}
-
-function rowCard(slot) {
-  const rec = state.open;
-  const ex = exOf(rec, slot.exercise_id);
-  const sets = M.slotSets(rec.doc, slot.position);
-  const planned = M.slotPlanned(slot);
-  const done = M.slotComplete(rec, slot);
-  const lt = M.lastTime(history(), ex.id);
-  const meta = sets.length
-    ? `${sets.length}${planned ? ` of ${planned}` : ''} ${sets.length === 1 && !planned ? 'set' : 'sets'} · ${U.compactSets(sets, true)}`
-    : [ex.group, ex.type, planText(slot, ex, false)].filter(Boolean).join(' · ');
-  return h('button.ex.row', { type: 'button', 'data-slot': String(slot.position), onclick: () => makeCurrent(slot.position) },
-    h(`div.num${done ? '.done' : ''}`, done ? '✓' : String(slot.position)),
-    h('div.info', h('div.name', ex.name), h('div.meta', meta)),
-    !sets.length && lt ? h('div.lastv', U.setText(lt.sets[0].type, lt.sets[0].measure, lt.sets[0].weight_kg, valueOf(lt.sets[0]))) : null);
 }
 
 function currentCard(slot) {
@@ -530,15 +554,28 @@ function currentCard(slot) {
       }
     }
   }
-  return h('div.ex.current', { 'data-slot': String(slot.position) },
+  const next = M.nextOpenSlot(rec, slot.position);
+  let nextEl;
+  if (next) {
+    const nex = exOf(rec, next.exercise_id);
+    const plan = planText(next, nex, false);
+    nextEl = h('button.next', { type: 'button', 'data-action': 'next', 'data-slot': String(next.position), onclick: () => makeCurrent(next.position) },
+      h('span.k', 'Next:'), h('span.v', `${nex.name}${plan ? ` · ${plan}` : ''}`), h('i', '›'));
+  } else {
+    const anyPlanned = rec.slots.some(s => M.slotPlanned(s) !== null);
+    nextEl = h('div.next.none', { 'data-next': 'none' }, h('span.k', 'Next:'),
+      h('span.v', anyPlanned ? 'nothing left — all planned sets logged' : 'add another exercise below when ready'));
+  }
+  return h('div.ex.current.fill', { 'data-slot': String(slot.position) },
     h('div.toprow',
       h('div.num.now', String(slot.position)),
       h('div.info', h('div.name', ex.name), h('div.meta', meta)),
       h('button.swap', { type: 'button', 'data-action': 'swap', onclick: openSwap }, h('i', '⇄'), ' Swap')),
     notes.length ? h('div.notes', notes) : null,
     h('div.lasttime', lt ? `Last time ${U.dayMon(lt.started_at)} · ${U.compactSets(lt.sets, false)}` : 'Not done before'),
-    rows,
-    planned ? h('button.addset', { type: 'button', 'data-action': 'add-set', onclick: () => addExtraSet(slot.position) }, '+ Set') : null);
+    h('div.setlist', rows,
+      planned ? h('button.addset', { type: 'button', 'data-action': 'add-set', onclick: () => addExtraSet(slot.position) }, '+ Set') : null),
+    nextEl);
 }
 
 function shortOrFull(s) { return U.setText(s.type, s.measure, s.weight_kg, valueOf(s)); }
@@ -1072,7 +1109,7 @@ function settingsView() {
 
   // Connection
   groups.push(h('section.group', { 'data-group': 'connection' }, h('h2', 'Connection'),
-    h('p.row', { id: 'conn-status' }, state.connText || 'Not tested yet'),
+    h('p.row', { id: 'conn-status', class: state.connText && state.connText !== 'Testing…' ? (state.connOk ? 'ok' : 'bad') : null }, state.connText || 'Not tested yet'),
     h('button.btn.secondary', { type: 'button', 'data-action': 'test', disabled: !s.token, onclick: runConnectionTest }, 'Test connection')));
 
   // Setup
