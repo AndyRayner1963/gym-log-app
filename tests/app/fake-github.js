@@ -69,6 +69,7 @@ class FakeGitHub {
       return reply(200, [...children.values()].sort((a, b) => a.name.localeCompare(b.name)));
     }
     if (method === 'PUT') {
+      if (this.holdPut) { const gate = this.holdPut; this.held = (this.held || 0) + 1; await gate; }
       let body;
       try { body = JSON.parse(req.postData() || '{}'); } catch { return reply(400, { message: 'Problems parsing JSON' }); }
       if (!body.message || typeof body.content !== 'string') return reply(422, { message: 'Invalid request.' });

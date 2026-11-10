@@ -48,6 +48,17 @@ async function openApp(opts = {}) {
     serviceWorkers: opts.sw ? 'allow' : 'block', acceptDownloads: true, hasTouch: false,
   });
   await fake.attach(ctx);
+  // Test-only: remember every IndexedDB connection the page opens, so a test can close
+  // them behind the app's back, as iOS does to a backgrounded page.  Nothing in docs/ changes.
+  await ctx.addInitScript(() => {
+    const open = IDBFactory.prototype.open;
+    window.__idbConns = [];
+    IDBFactory.prototype.open = function (...args) {
+      const req = open.apply(this, args);
+      req.addEventListener('success', () => window.__idbConns.push(req.result));
+      return req;
+    };
+  });
   const requests = [];
   ctx.on('request', r => requests.push(r.url()));
   const page = await ctx.newPage();
@@ -150,9 +161,14 @@ async function entryValues(page) {
   });
 }
 
+/** Close every database connection the page holds, without telling the app.  Returns how many. */
+async function closeConnections(page) {
+  return page.evaluate(() => { const n = window.__idbConns.length; for (const c of window.__idbConns) c.close(); window.__idbConns = []; return n; });
+}
+
 async function strip(page) { return (await page.textContent('#strip')).replace(/\s+/g, ' ').trim(); }
 
 module.exports = {
   FakeGitHub, SETUP, FIXTURE_SESSIONS, fixtureDoc, closedFixtureDocs, T0, VIEWPORT, SETTINGS,
-  env, closeEnv, openApp, ready, seed, readDB, openSession, waitFor, logSet, setEntry, entryValues, strip,
+  env, closeEnv, openApp, ready, seed, readDB, openSession, waitFor, logSet, setEntry, entryValues, strip, closeConnections,
 };

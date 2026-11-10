@@ -166,6 +166,9 @@ let lastFront = 0;
 let lastUpdateCheck = Date.now();
 const UPDATE_CHECK_MS = 60 * 60 * 1000;
 async function onFront() {
+  // iOS may have closed the database connection while the app was in the background:
+  // a cheap read replaces a dead connection now, not on the user's first tap.
+  await db.ping();
   const changed = await autoClose(true);
   if (changed) render();
   if (Date.now() - lastFront > 60000) { lastFront = Date.now(); refreshSetup(false); }

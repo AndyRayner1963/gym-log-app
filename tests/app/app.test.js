@@ -964,3 +964,86 @@ test('Tap targets: every button and tappable row on every screen is at least 44 
   assert.deepEqual(problems, []);
   await app.close();
 });
+
+// ---------------------------------------------------------------------------
+// Lost database connection (iOS closes it for a backgrounded or suspended page).
+// Simulation: the test closes the page's IndexedDB connection with IDBDatabase.close()
+// behind the app's back, so the app's next db.transaction() throws InvalidStateError
+// "The database connection is closing", the error seen on the iPhone.
+
+const failureBox = page => page.$('[data-dialog=storage-failed]');
+
+test('Lost connection (a): mid-session, the next Log tap reconnects and stores exactly one set', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  assert.ok((await H.closeConnections(page)) >= 1, 'a connection was closed');
+  await H.logSet(page);
+  await page.waitForTimeout(300);
+  assert.equal(await failureBox(page), null, 'no "Not saved" box');
+  const rec = await H.openSession(page);
+  assert.equal(rec.doc.sets.length, 2, 'exactly one more set');
+  assert.equal(new Set(rec.doc.sets.map(s => s.set_id)).size, 2);
+  assert.equal(await page.locator('.ex.current .set.done').count(), 2);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('Lost connection (b): starting a workout from Home reconnects', async () => {
+  const app = await start();
+  const { page } = app;
+  assert.ok((await H.closeConnections(page)) >= 1);
+  await begin(page);
+  assert.equal(await failureBox(page), null);
+  const db = await H.readDB(page);
+  assert.equal(db.sessions.filter(s => s.doc.status === 'open').length, 1, 'one session started');
+  await H.logSet(page);
+  assert.equal((await H.openSession(page)).doc.sets.length, 1);
+  await app.close();
+});
+
+test('Lost connection (c): the upload marks the session uploaded after the connection is lost mid-upload', async () => {
+  const fake = new FakeGitHub();
+  const app = await start({ fake });
+  const { page } = app;
+  let release;
+  fake.holdPut = new Promise(r => { release = r; });
+  await begin(page);
+  await H.logSet(page);
+  await H.waitFor(() => fake.held === 1, { message: 'PUT in flight' });
+  assert.ok((await H.closeConnections(page)) >= 1);
+  fake.holdPut = null;
+  release();
+  await H.waitFor(async () => { const r = await H.openSession(page); return r && !r.dirty && r.sha; }, { message: 'session marked uploaded' });
+  const rec = await H.openSession(page);
+  const paths = fake.sessionPaths();
+  assert.equal(paths.length, 1);
+  assert.equal(rec.sha, fake.get(paths[0]).sha);
+  assert.equal(fake.json(paths[0]).revision, rec.doc.revision);
+  assert.equal(fake.puts.length, 1, 'no second upload was needed');
+  assert.equal(await failureBox(page), null);
+  await app.close();
+});
+
+test('Lost connection (e): after a background/foreground cycle the connection is replaced before the first tap', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  await setVisibility(page, 'hidden');
+  assert.ok((await H.closeConnections(page)) >= 1);
+  await setVisibility(page, 'visible');
+  await H.waitFor(() => page.evaluate(() => window.__idbConns.length >= 1), { message: 'connection reopened on return to the front' });
+  await H.logSet(page);
+  assert.equal(await failureBox(page), null);
+  assert.equal((await H.openSession(page)).doc.sets.length, 2);
+  // The same through a back-forward-cache style restore (pageshow with persisted).
+  assert.ok((await H.closeConnections(page)) >= 1);
+  await page.evaluate(() => { const e = new Event('pageshow'); Object.defineProperty(e, 'persisted', { value: true }); window.dispatchEvent(e); });
+  await H.waitFor(() => page.evaluate(() => window.__idbConns.length >= 1), { message: 'connection reopened on pageshow' });
+  await H.logSet(page);
+  assert.equal((await H.openSession(page)).doc.sets.length, 3);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
