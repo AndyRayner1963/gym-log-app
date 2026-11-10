@@ -182,6 +182,19 @@ async function panelInfo(page) {
   return info;
 }
 
+/** Wait until the service worker controls the page; on timeout, say what state it is in. */
+async function waitForController(page, timeout = 10000) {
+  try {
+    await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout });
+  } catch (e) {
+    const st = await page.evaluate(async () => {
+      const r = await navigator.serviceWorker.getRegistration();
+      return r ? { installing: r.installing && r.installing.state, waiting: r.waiting && r.waiting.state, active: r.active && r.active.state } : 'no registration';
+    }).catch(err => `unreadable: ${err.message}`);
+    throw new Error(`Service worker never took control within ${timeout} ms; registration: ${JSON.stringify(st)}`);
+  }
+}
+
 /** Close every database connection the page holds, without telling the app.  Returns how many. */
 async function closeConnections(page) {
   return page.evaluate(() => { const n = window.__idbConns.length; for (const c of window.__idbConns) c.close(); window.__idbConns = []; return n; });
@@ -191,5 +204,5 @@ async function strip(page) { return (await page.textContent('#strip')).replace(/
 
 module.exports = {
   FakeGitHub, SETUP, FIXTURE_SESSIONS, fixtureDoc, closedFixtureDocs, T0, VIEWPORT, SETTINGS,
-  env, closeEnv, openApp, ready, seed, readDB, openSession, waitFor, logSet, setEntry, entryValues, strip, closeConnections, goSlot, panelInfo,
+  env, closeEnv, openApp, ready, seed, readDB, openSession, waitFor, logSet, setEntry, entryValues, strip, closeConnections, goSlot, panelInfo, waitForController,
 };

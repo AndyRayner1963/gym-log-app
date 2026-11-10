@@ -52,7 +52,7 @@ test('App 1: offline from the start: start, log, end; everything in the database
   const fake = new FakeGitHub();
   const app = await start({ sw: true, fake });
   const { page, ctx } = app;
-  await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 10000 });
+  await H.waitForController(page);
   // Network off: the app's own site and GitHub.
   fake.mode = 'offline';
   await ctx.setOffline(true);
@@ -586,7 +586,7 @@ test('App 14: nothing is requested from any address other than the app\u2019s ow
   const { page, srv, requests } = app;
   const auth = [];
   app.ctx.on('request', r => { const a = r.headers().authorization; if (a) auth.push(r.url()); });
-  await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 10000 });
+  await H.waitForController(page);
   await page.reload();
   await H.ready(page);
   // A normal session touching every screen.
@@ -785,6 +785,9 @@ test('Restore: with a working token and no sessions, the app offers and download
   const { page } = app;
   await page.waitForSelector('[data-banner=restore]');
   await page.click('[data-banner=restore] [data-action=restore]');
+  // The restore writes every file first, then auto-closes the stale open session; the banner goes
+  // only when all of that is done.  Waiting for the count alone raced the auto-close (seen once).
+  await page.waitForSelector('[data-banner=restore]', { state: 'detached' });
   await H.waitFor(async () => (await H.readDB(page)).sessions.length === H.FIXTURE_SESSIONS.length, { message: 'all sessions downloaded' });
   const db = await H.readDB(page);
   for (const s of H.FIXTURE_SESSIONS) {
@@ -854,7 +857,7 @@ test('Update: at cold start a waiting version takes over and the page reloads on
   const waiting = p => p.evaluate(async () => !!(await navigator.serviceWorker.getRegistration()).waiting);
   const original = await swVersion(page);
   try {
-    await page.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 10000 });
+    await H.waitForController(page);
     // A new version is published; the running page (an app in use) finds it and downloads it.
     srv.overrides['version.js'] = "self.SWOLE_VERSION = '9.9.9-test';\n";
     await page.evaluate(async () => { await (await navigator.serviceWorker.getRegistration()).update(); });
