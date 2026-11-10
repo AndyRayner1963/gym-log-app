@@ -256,7 +256,7 @@ def test_history_has_5_sessions_48_sets_in_order_with_swapped_flags(env):
     assert s_hdr == ["Session ID", "Date", "Start", "End", "Minutes", "Workout", "Comment", "Status", "Sets", "Revision"]
     assert t_hdr == ["Session ID", "Date", "Workout", "Exercise Order", "Set", "Planned Exercise ID", "Planned Exercise",
                      "Exercise ID", "Exercise", "Group", "Type", "Measure", "Weight (kg)", "Reps", "Duration (s)",
-                     "Time Logged", "Swapped"]
+                     "Time Logged", "Swapped", "RIR", "Failure"]
     srows, trows = sessions_rows(env.history), sets_rows(env.history)
     assert len(srows) == 5 and len(trows) == 48
     assert [r[1].date() if hasattr(r[1], "date") else r[1] for r in srows] == [
@@ -303,7 +303,7 @@ def test_history_datetimes_are_local_wall_clock_not_converted(env):
 def test_history_tables_are_valid_and_match_data_ranges(env):
     assert env.run().returncode == 0
     wb = openpyxl.load_workbook(env.history)
-    for sheet, table, ncols in (("Sessions", "tblSessions", 10), ("Sets", "tblSets", 17)):
+    for sheet, table, ncols in (("Sessions", "tblSessions", 10), ("Sets", "tblSets", 19)):
         ws = wb[sheet]
         assert list(ws.tables) == [table]
         ref = ws.tables[table].ref
@@ -326,7 +326,7 @@ def test_history_with_zero_sessions_is_still_a_valid_table(env):
     assert p.returncode == 0, p.stdout
     wb = openpyxl.load_workbook(env.history)
     assert wb["Sessions"].tables["tblSessions"].ref == "A1:J2"
-    assert wb["Sets"].tables["tblSets"].ref == "A1:Q2"
+    assert wb["Sets"].tables["tblSets"].ref == "A1:S2"
     assert "0 sessions (0 new)" in p.summary
 
 
@@ -777,3 +777,115 @@ def test_script_uses_nothing_beyond_stdlib_and_openpyxl():
     allowed = {"argparse", "datetime", "hashlib", "json", "math", "os", "re", "socket", "subprocess", "sys",
                "traceback", "zipfile", "openpyxl"}
     assert mods <= allowed, mods - allowed
+
+
+# ---------------------------------------------------------------- reps in reserve (app 1.1.0, history format 2)
+
+def rir_of(trows, sid, slot, setno):
+    row = [r for r in trows if (r[0], r[3], r[4]) == (sid, slot, setno)][0]
+    return row[17], row[18]
+
+
+def test_rir_and_failure_columns_sit_after_swapped_with_correct_values(env):
+    assert env.run().returncode == 0
+    ws = openpyxl.load_workbook(env.history)["Sets"]
+    head = [c.value for c in ws[1]]
+    assert head[16:] == ["Swapped", "RIR", "Failure"] and len(head) == 19
+    srows, trows = sessions_rows(env.history), sets_rows(env.history)
+    s07, s09 = srows[2][0], srows[4][0]
+    assert rir_of(trows, s07, 1, 3) == (3, None)
+    assert rir_of(trows, s07, 1, 4) == (1, None)
+    assert rir_of(trows, s09, 1, 3) == (0, "Y")
+    assert rir_of(trows, s09, 2, 3) == (0, None)
+    # sets without the fields: both blank; any RIR present is an integer and Y only ever sits with RIR 0
+    recorded = [r for r in trows if r[17] is not None]
+    assert 0 < len(recorded) < len(trows)
+    assert all(r[17] is None and r[18] is None for r in trows if r[17] is None)
+    assert all(isinstance(r[17], int) and 0 <= r[17] <= 5 for r in recorded)
+    assert all(r[17] == 0 for r in trows if r[18] == "Y")
+    # styling matches Swapped
+    assert ws["R2"].alignment.horizontal == ws["Q2"].alignment.horizontal == "center"
+    assert ws["S2"].alignment.horizontal == "center"
+    assert ws["R1"].font.bold and ws["R1"].fill.start_color.rgb == ws["Q1"].fill.start_color.rgb
+    assert ws.column_dimensions["R"].width and ws.column_dimensions["S"].width
+
+
+@pytest.mark.parametrize("label,fields", [
+    ("six", {"rir": 6, "failed": False}),
+    ("negative", {"rir": -1, "failed": False}),
+    ("text", {"rir": "2", "failed": False}),
+    ("float", {"rir": 2.5, "failed": False}),
+    ("bool", {"rir": True, "failed": False}),
+    ("failed_not_bool", {"rir": 0, "failed": "yes"}),
+    ("rir_without_failed", {"rir": 2}),
+    ("failed_without_rir", {"failed": True}),
+])
+def test_malformed_rir_skips_that_file_only(env, label, fields):
+    def poison(other):
+        p = env.session_path(other, "2026-11-07")
+        d = json.load(open(p, encoding="utf-8"))
+        for s in d["sets"]:
+            s.pop("rir", None)
+            s.pop("failed", None)
+        d["sets"][2].update(fields)
+        json.dump(d, open(p, "w", encoding="utf-8"), indent=2)
+    env.push_change(poison)
+    p = env.run()
+    assert p.returncode == 1, p.stdout
+    assert "2026-11-07_" in p.stdout and "Skipped" in p.stdout
+    assert p.summary.startswith("Sync needs attention")
+    assert len(sessions_rows(env.history)) == 4            # the other four are processed
+    assert last_sync(env)["result"] == "attention"
+
+
+def test_history_records_format_number_2_invisibly(env):
+    assert env.run().returncode == 0
+    wb = openpyxl.load_workbook(env.history)
+    assert wb.sheetnames == ["Sessions", "Sets"]
+    props = {p.name: p.value for p in wb.custom_doc_props.props}
+    assert props == {"Swole history format": 2}
+
+
+def test_second_run_with_rir_data_is_identical(env):
+    assert env.run().returncode == 0
+    first = open(env.history, "rb").read()
+    assert env.run().returncode == 0
+    assert open(env.history, "rb").read() == first
+
+
+def write_format_1_history(env):
+    """Build a history workbook as the pre-change script did: 17 Sets columns, no format property."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gymsync_fmt1", os.path.join(ROOT, "mac", "gymsync.py"))
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    sessions = g.step_read_sessions(type("R", (), {"flag": lambda *a: None})(), env.data)
+    srows, trows = g.history_rows(sessions)
+    g.SET_COLS = g.SET_COLS[:17]
+    tmp = env.history + ".tmp"
+    g.build_history_workbook(srows, [r[:17] for r in trows], tmp)
+    with zipfile.ZipFile(tmp) as zin, zipfile.ZipFile(env.history, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in zin.infolist():
+            if "custom" in info.filename:
+                continue
+            data = zin.read(info.filename)
+            if info.filename == "[Content_Types].xml":
+                data = re.sub(rb"<Override[^>]*custom\.xml[^>]*/>", b"", data)
+            if info.filename == "_rels/.rels":
+                data = re.sub(rb"<Relationship [^>]*custom\.xml[^>]*/>", b"", data)
+            zout.writestr(info, data)
+    os.remove(tmp)
+
+
+def test_upgrade_from_a_format_1_history_written_by_the_old_layout(env):
+    write_format_1_history(env)
+    wb = openpyxl.load_workbook(env.history)
+    assert [c.value for c in wb["Sets"][1]][-1] == "Swapped" and not wb.custom_doc_props.props
+    p = env.run()
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "5 sessions (0 new)" in p.summary and "corrected" not in p.summary
+    assert "upgraded to history format 2" in p.stdout
+    assert last_sync(env)["sessions_changed"] == 0 and last_sync(env)["sessions_new"] == 0
+    assert [c.value for c in openpyxl.load_workbook(env.history)["Sets"][1]][-2:] == ["RIR", "Failure"]
+    p3 = env.run()
+    assert "upgraded" not in p3.stdout and "already up to date" in p3.stdout
