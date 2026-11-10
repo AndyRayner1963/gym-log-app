@@ -63,6 +63,7 @@ test('App 1: offline from the start: start, log, end; everything in the database
   await H.logSet(page);
   await H.logSet(page);
   await H.logSet(page);
+  await H.tapNext(page);
   await H.logSet(page);
   await endWorkout(page, 'Offline session');
   const db = await H.readDB(page);
@@ -162,8 +163,9 @@ test('App 4: connection cut mid-upload, then restored: still one file, with the 
   await H.waitFor(async () => /Offline/.test(await H.strip(page)), { message: 'offline' });
   fake.mode = 'offline';
   await H.logSet(page);
-  // 4. Restored.
+  // 4. Restored.  (Three sets done: move on to the next exercise first.)
   fake.mode = 'online';
+  await H.tapNext(page);
   await H.logSet(page);
   await H.waitFor(async () => /All uploaded/.test(await H.strip(page)), { message: 'All uploaded' });
   rec = await H.openSession(page);
@@ -304,21 +306,23 @@ test('App 7: an extra set beyond the plan is numbered and stored', async () => {
   await H.logSet(page);
   await H.logSet(page);
   await H.logSet(page);
-  await page.waitForSelector('.ex.current[data-slot="2"]');
-  assert.ok((await H.panelInfo(page)).find(i => i.slot === 1).done, 'slot 1 ticked');
-  await H.goSlot(page, 1);
+  // v1.0.1: the exercise stays current in its done state; nothing moves without a tap.
   await page.waitForSelector('[data-dock=complete]');
-  await page.click('[data-action=add-set-dock]');
-  await page.waitForSelector('[data-dock=entry]');
+  assert.ok(await page.$('.ex.current[data-slot="1"]'), 'still on the same exercise');
+  assert.ok((await H.panelInfo(page)).find(i => i.slot === 1).done, 'slot 1 ticked');
+  await H.tapExtra(page);
   assert.match(await page.textContent('.dock .title b'), /^Set 4 of 4 · Test Machine Press$/);
   const set3 = (await H.openSession(page)).doc.sets.find(s => s.position === 1 && s.set_number === 3);
   const e = await H.entryValues(page);
   assert.deepEqual([e.weight, e.value], [String(set3.weight_kg), String(set3.reps)], 'extra set pre-filled by rule 2');
   await H.logSet(page);
-  // And one more with the in-card "+ Set".
-  await H.goSlot(page, 1);
-  await page.waitForSelector('.ex.current[data-slot="1"]');
+  await page.waitForSelector('[data-dock=complete]');
+  assert.equal(norm(await page.textContent('[data-done=next]')), '4 sets done (3 planned) · Test Machine Press');
+  // And one more with the in-box "+ Set", which in the done state is the same as + Extra set.
+  await page.clock.fastForward(1100);
   await page.click('.ex.current [data-action=add-set]');
+  await page.waitForSelector('[data-dock=entry]');
+  assert.match(await page.textContent('.dock .title b'), /^Set 5 of 5 · Test Machine Press$/);
   await H.logSet(page);
   const rec = await H.openSession(page);
   const s1 = rec.doc.sets.filter(s => s.position === 1).sort((a, b) => a.set_number - b.set_number);
@@ -643,9 +647,8 @@ test('Contract: a session file made by the app matches the fixture shape', async
   await H.setEntry(page, 12.5, 10);
   await H.logSet(page);
   await H.logSet(page);
-  await page.waitForSelector('.ex.current[data-slot="2"]');
-  await H.goSlot(page, 1);
   await page.waitForSelector('[data-dock=complete]');
+  await page.clock.fastForward(1100);
   await page.click('.ex.current [data-action=add-set]');
   await page.waitForSelector('[data-dock=entry]');
   await H.logSet(page);
@@ -923,6 +926,10 @@ test('Tap targets: every button and tappable row on every screen is at least 44 
   await begin(page);
   await H.logSet(page);
   await measure('Active Workout (reps)');
+  await H.logSet(page);
+  await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete] [data-action=next-dock]');
+  await measure('Done state (Next and + Extra set)');
   await page.click('[data-action=exercises]');
   await page.waitForSelector('[data-sheet=exercises]');
   await measure('Exercises panel');
@@ -1152,11 +1159,10 @@ test('Workout layout: the current exercise fills the middle; sets scroll inside 
   await H.goSlot(page, 1);
   for (let i = 0; i < 3; i++) await H.logSet(page);
   for (let i = 0; i < 6; i++) {
-    await H.goSlot(page, 1);   // after each extra set the panel moves on to the next exercise
-    await page.click('[data-dock=complete] [data-action=add-set-dock]');
+    await H.tapExtra(page);    // the exercise stays current: one tap for each further set
     await H.logSet(page);
   }
-  await H.goSlot(page, 1);
+  assert.ok(await page.$('.ex.current[data-slot="1"]'));
   const inner = await page.evaluate(() => {
     const l = document.querySelector('.setlist');
     const card = document.querySelector('.ex.current').getBoundingClientRect();
@@ -1247,6 +1253,155 @@ test('Home during a workout: Home button keeps the session open; Resume card; st
   assert.equal((await H.readDB(page)).sessions.find(s => s.id === id).doc.status, 'auto_closed');
   assert.equal(await page.$eval('[data-workout="Test Lower"]', b => b.disabled), false);
   assert.equal(await page.$('[data-hint=one-open]'), null);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// v1.0.1: no automatic jump after the last planned set.
+
+test('Done state: after the last planned set the exercise stays; Next and + Extra set; nothing moves without a tap', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  const logBox = await page.locator('[data-action=log]').boundingBox();
+  await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete]');
+  assert.ok(await page.$('.ex.current[data-slot="1"]'), 'still on the same exercise');
+  assert.equal(await page.$('[data-action=log]'), null, 'no Log button in the done state');
+  assert.equal(norm(await page.innerText('[data-done=next]')), '3 of 3 sets done · Test Machine Press');
+  assert.equal(norm(await page.innerText('[data-action=next-dock]')), 'Next: Test Cable Row ›');
+  assert.equal(norm(await page.innerText('[data-action=extra-set]')), '+ Extra set');
+  // The Next button sits where the Log button was.
+  const nextBox = await page.locator('[data-action=next-dock]').boundingBox();
+  assert.ok(Math.abs(nextBox.y - logBox.y) < 2 && Math.abs(nextBox.height - logBox.height) < 2, `Next where Log was (${JSON.stringify([logBox, nextBox])})`);
+  // Nothing on screen changes without a tap.
+  const before = await page.innerHTML('#app .main');
+  await page.clock.fastForward('05:00');
+  assert.ok(await page.$('[data-dock=complete]') && await page.$('.ex.current[data-slot="1"]'));
+  assert.equal((await page.innerHTML('#app .main')).replace(/\d+ min/g, ''), before.replace(/\d+ min/g, ''));
+  // Next goes to the next exercise with sets left.
+  await H.tapNext(page);
+  assert.ok(await page.$('[data-dock=entry]'));
+  // Sets before the last planned one keep moving within the exercise.
+  await H.logSet(page);
+  assert.ok(await page.$('.ex.current[data-slot="2"] ~ * , .ex.current[data-slot="2"]'));
+  assert.match(await page.textContent('.dock .title b'), /^Set 2 of 3 · Test Cable Row$/);
+  // No exercise left: "All planned sets logged" with + Extra set only.
+  await H.logSet(page);
+  await H.logSet(page);
+  for (const pos of [3, 4]) {
+    await H.goSlot(page, pos);
+    for (let i = 0; i < 3; i++) await H.logSet(page);
+  }
+  await page.waitForSelector('[data-done=all]');
+  assert.match(norm(await page.innerText('[data-done=all]')), /^All planned sets logged 3 of 3 sets done · Test Plank$/);
+  assert.equal(await page.$('[data-action=next-dock]'), null);
+  assert.ok(await page.$('[data-action=extra-set]'));
+  assert.equal(await page.locator('[data-action=end]').count(), 1, 'End Workout only at the top');
+  // Free-form exercises have no plan: after a set the dock is ready for the next one.
+  await endWorkout(page);
+  await begin(page, '');
+  await page.click('[data-sheet=add] [data-group=Core]');
+  await page.click('[data-sheet=add] [data-ex=D02]');
+  await page.waitForSelector('[data-dock=entry]');
+  await H.setEntry(page, 0, 15);
+  for (let i = 0; i < 4; i++) await H.logSet(page);
+  assert.ok(await page.$('[data-dock=entry]'));
+  assert.match(await page.textContent('.dock .title b'), /^Set 5 · Test Bodyweight Crunch$/);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('Done state guard: a second tap within a second of logging the last set does not trigger Next', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await page.clock.fastForward(1100);
+  const box = await page.locator('[data-action=log]').boundingBox();
+  const x = box.x + box.width / 2, y = box.y + box.height / 2;
+  // Double tap on the Log button: the first logs set 3, the second lands on Next.
+  await page.mouse.click(x, y);
+  await page.waitForSelector('[data-dock=complete] [data-action=next-dock]');
+  await page.mouse.click(x, y);
+  await page.waitForTimeout(300);
+  assert.ok(await page.$('.ex.current[data-slot="1"]'), 'Next was not triggered');
+  assert.equal((await H.openSession(page)).doc.sets.length, 3);
+  // The same for + Extra set.
+  await page.click('[data-action=extra-set]');
+  await page.waitForTimeout(200);
+  assert.ok(await page.$('[data-dock=complete]'), '+ Extra set ignored within the second as well');
+  // After the second, Next works on one tap.
+  await page.clock.fastForward(1100);
+  await page.mouse.click(x, y);
+  await page.waitForSelector('.ex.current[data-slot="2"]');
+  await app.close();
+});
+
+test('Done state after reload: the done state comes back; an asked-for extra set comes back as its steppers', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete]');
+  await page.reload();
+  await H.ready(page);
+  await page.waitForSelector('[data-dock=complete]');
+  assert.ok(await page.$('.ex.current[data-slot="1"]'), 'done state of the same exercise, not the next one');
+  // Chosen behaviour: after + Extra set and a reload before logging, the steppers for that set show.
+  await H.tapExtra(page);
+  await H.waitFor(async () => (await H.openSession(page)).slots[0].extra === 1, { message: 'extra saved' });
+  await page.reload();
+  await H.ready(page);
+  await page.waitForSelector('[data-dock=entry]');
+  assert.match(await page.textContent('.dock .title b'), /^Set 4 of 4 · Test Machine Press$/);
+  const set3 = (await H.openSession(page)).doc.sets[2];
+  const e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], [String(set3.weight_kg), String(set3.reps)]);
+  await app.close();
+});
+
+test('Done state corrections: Undo, Delete and Edit from the done state leave a coherent state', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete]');
+  // Undo the last planned set: back to its steppers.
+  await page.click('[data-action=undo]');
+  await page.click('[data-dialog=undo] [data-role=ok]');
+  await page.waitForSelector('[data-dock=entry]');
+  assert.match(await page.textContent('.dock .title b'), /^Set 3 of 3 · Test Machine Press$/);
+  await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete]');
+  // Edit a set in the done state: still done.
+  const sets = (await H.openSession(page)).doc.sets;
+  await page.click(`[data-set="${sets[0].set_id}"]`);
+  await page.click('[data-sheet=edit] [data-kind=reps] [data-step=plus]');
+  await page.click('[data-sheet=edit] [data-action=save]');
+  await page.waitForSelector('[data-sheet=edit]', { state: 'detached' });
+  assert.ok(await page.$('[data-dock=complete]'));
+  // Delete the last planned set: its steppers come back.
+  await page.click(`[data-set="${sets[2].set_id}"]`);
+  await page.click('[data-sheet=edit] [data-action=delete]');
+  await page.click('[data-dialog=delete-set] [data-role=ok]');
+  await page.waitForSelector('[data-dock=entry]');
+  assert.match(await page.textContent('.dock .title b'), /^Set 3 of 3 · Test Machine Press$/);
+  await H.logSet(page);
+  // An extra set asked for but not logged goes away with an Undo: no phantom "Set 3 of 4".
+  await H.tapExtra(page);
+  await page.click('[data-action=undo]');
+  await page.click('[data-dialog=undo] [data-role=ok]');
+  await H.waitFor(async () => (await H.openSession(page)).doc.sets.length === 2, { message: 'undo saved' });
+  await page.waitForSelector('[data-dock=entry]');
+  assert.match(await page.textContent('.dock .title b'), /^Set 3 of 3 · Test Machine Press$/);
+  const rec = await H.openSession(page);
+  assert.equal(rec.slots[0].extra, 0);
+  assert.deepEqual(rec.doc.sets.filter(s => s.position === 1).map(s => s.set_number), [1, 2]);
   assert.deepEqual(app.errors, []);
   await app.close();
 });

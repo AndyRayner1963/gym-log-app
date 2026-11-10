@@ -559,7 +559,7 @@ function currentCard(slot) {
   if (next) {
     const nex = exOf(rec, next.exercise_id);
     const plan = planText(next, nex, false);
-    nextEl = h('button.next', { type: 'button', 'data-action': 'next', 'data-slot': String(next.position), onclick: () => makeCurrent(next.position) },
+    nextEl = h('button.next', { type: 'button', 'data-action': 'next', 'data-slot': String(next.position), onclick: () => goNext(next.position) },
       h('span.k', 'Next:'), h('span.v', `${nex.name}${plan ? ` · ${plan}` : ''}`), h('i', '›'));
   } else {
     const anyPlanned = rec.slots.some(s => M.slotPlanned(s) !== null);
@@ -618,10 +618,25 @@ function dockEl() {
   const ex = exOf(rec, slot.exercise_id);
   const planned = M.slotPlanned(slot);
   if (M.slotComplete(rec, slot)) {
+    // Done state (v1.0.1): the exercise stays current after its last planned set.  Next takes the
+    // Log button's place; + Extra set sits above it.  Both ignore taps for a second after a log.
+    const n = M.slotSets(rec.doc, slot.position).length;
+    const ps = slot.planned_sets;
+    const status = n > ps ? `${n} sets done (${ps} planned)` : `${n} of ${ps} sets done`;
+    const next = M.nextOpenSlot(rec, slot.position);
+    const extra = h('button.btn.secondary.extra', { type: 'button', 'data-action': 'extra-set', onclick: () => addExtraSet(slot.position) }, '+ Extra set');
+    if (next) {
+      const nex = exOf(rec, next.exercise_id);
+      return h('section.dock', { 'data-dock': 'complete' },
+        h('p.donestate', { 'data-done': 'next' }, `${status} · ${ex.name}`),
+        extra,
+        h('button.log.nextbtn', { type: 'button', 'data-action': 'next-dock', 'data-slot': String(next.position), onclick: () => goNext(next.position) },
+          h('span.lbl', 'Next: '), h('span.nm', nex.name), h('i', ' ›')),
+        minor);
+    }
     return h('section.dock', { 'data-dock': 'complete' },
-      h('div.title', h('b', ex.name), h('span', `${planned} of ${planned} sets done`)),
-      h('p.msg', 'All planned sets are logged.  Add a set, add an exercise, or end the workout.'),
-      h('button.log', { type: 'button', 'data-action': 'add-set-dock', onclick: () => addExtraSet(slot.position) }, '+ Set'),
+      h('p.donestate', { 'data-done': 'all' }, h('b', 'All planned sets logged'), h('span', `${status} · ${ex.name}`)),
+      extra,
       minor);
   }
   const e = ensureEntry(slot);
@@ -643,7 +658,6 @@ function dockEl() {
     ? stepper({ label: 'Seconds', value: e.value, step: 5, kind: 'secs', name: 'seconds', small: target ? `target ${target}` : 'steps of 5 s', onChange: v => { e.value = v; changed(); } })
     : stepper({ label: 'Reps', value: e.value, step: 1, kind: 'reps', name: 'reps', small: target ? `target ${target.replace(' reps', '')}` : '', onChange: v => { e.value = v; changed(); } });
   updateLog();
-  if (Date.now() - state.lastLogAt < 1000) { logBtn.classList.add('guard'); setTimeout(() => logBtn.classList.remove('guard'), 1000); }
   let watch = null;
   if (ex.measure === 'time') {
     const sw = rec.ui.stopwatch;
@@ -739,7 +753,16 @@ async function makeCurrent(pos) {
   render();
 }
 
+/** True within a second of a logged set: Next / + Extra set sit where Log was (double-tap guard, 5.7). */
+function guarded() { return Date.now() - state.lastLogAt < 1000 || state.busy; }
+
+async function goNext(pos) {
+  if (guarded()) return;
+  await makeCurrent(pos);
+}
+
 async function addExtraSet(pos) {
+  if (guarded()) return;
   await draftChain;
   state.entry = null;
   await saveUi(M.withExtraSet(state.open, pos));

@@ -161,6 +161,23 @@ async function entryValues(page) {
   });
 }
 
+/** In the done state, wait out the double-tap guard and tap the dock's Next button. */
+async function tapNext(page) {
+  await page.waitForSelector('[data-dock=complete] [data-action=next-dock]');
+  const to = await page.getAttribute('[data-action=next-dock]', 'data-slot');
+  await page.clock.fastForward(1100);
+  await page.click('[data-action=next-dock]');
+  await page.waitForSelector(`.ex.current[data-slot="${to}"]`);
+}
+
+/** In the done state, wait out the double-tap guard and tap + Extra set. */
+async function tapExtra(page) {
+  await page.waitForSelector('[data-dock=complete] [data-action=extra-set]');
+  await page.clock.fastForward(1100);
+  await page.click('[data-action=extra-set]');
+  await page.waitForSelector('[data-dock=entry]');
+}
+
 /** Make slot n current through the Exercises panel (the only list of exercises on the workout screen). */
 async function goSlot(page, n) {
   await page.click('[data-action=exercises]');
@@ -204,5 +221,5 @@ async function strip(page) { return (await page.textContent('#strip')).replace(/
 
 module.exports = {
   FakeGitHub, SETUP, FIXTURE_SESSIONS, fixtureDoc, closedFixtureDocs, T0, VIEWPORT, SETTINGS,
-  env, closeEnv, openApp, ready, seed, readDB, openSession, waitFor, logSet, setEntry, entryValues, strip, closeConnections, goSlot, panelInfo, waitForController,
+  env, closeEnv, openApp, ready, seed, readDB, openSession, waitFor, logSet, setEntry, entryValues, strip, closeConnections, goSlot, panelInfo, waitForController, tapNext, tapExtra,
 };

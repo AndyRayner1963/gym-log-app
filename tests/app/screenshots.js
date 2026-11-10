@@ -30,6 +30,10 @@ const OUT = path.join(__dirname, 'screenshots');
   await page.click('[data-workout="Test Upper"]');
   await page.waitForSelector('#app[data-view=workout]');
   for (let i = 0; i < 3; i++) await H.logSet(page, { advance: 180000 });
+  // Done state: the exercise stays after its last planned set (v1.0.1).
+  await page.waitForSelector('[data-dock=complete]');
+  await shot('02c-done-state');
+  await H.tapNext(page);
   await H.logSet(page, { advance: 240000 });
   await page.clock.fastForward(120000);
   await H.setEntry(page, 42.5);

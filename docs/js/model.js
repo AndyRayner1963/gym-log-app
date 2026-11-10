@@ -158,11 +158,8 @@ export function withLoggedSet(rec, pos, weight, value) {
   r.dirty = true;
   r.ui.draft = null;
   r.ui.stopwatch = null;
-  // After the last planned set, move to the next exercise that has sets left.
-  if (slotComplete(r, slot)) {
-    const next = nextOpenSlot(r, pos);
-    if (next) r.ui.current = next.position;
-  }
+  // No automatic move: after the last planned set the exercise stays current, in its
+  // "done" state, until the user taps Next or + Extra set (v1.0.1).
   return { rec: r, set };
 }
 
@@ -197,6 +194,10 @@ export function withDeletedSet(rec, setId) {
   const pos = r.doc.sets[i].position;
   r.doc.sets.splice(i, 1);
   renumber(r.doc, pos);
+  // An extra set that was asked for but not logged goes with the deleted set, so deleting
+  // the last planned set brings back the steppers for that set rather than a phantom extra.
+  const slot = r.slots ? r.slots.find(x => x.position === pos) : null;
+  if (slot && slot.planned_sets) slot.extra = Math.max(0, slotSets(r.doc, pos).length - slot.planned_sets);
   touch(r.doc);
   r.dirty = true;
   if (r.ui) r.ui.draft = null;
