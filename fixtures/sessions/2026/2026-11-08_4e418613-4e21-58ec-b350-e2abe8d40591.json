@@ -49,7 +49,9 @@
       "measure": "reps",
       "weight_kg": 16,
       "logged_at": "2026-11-08T10:20:00+07:00",
-      "reps": 9
+      "reps": 9,
+      "rir": 1,
+      "failed": false
     },
     {
       "set_id": "c5b5c618-b004-53c9-98a4-d7a6d51d600f",

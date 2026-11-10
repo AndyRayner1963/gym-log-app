@@ -55,7 +55,9 @@
       "logged_at": "2026-11-09T16:42:00+07:00",
       "planned_exercise_id": "C01",
       "planned_exercise_name": "Test Leg Press",
-      "reps": 12
+      "reps": 12,
+      "rir": 0,
+      "failed": true
     },
     {
       "set_id": "a781a82b-dc95-5104-ba5a-da31a6e05a5d",
@@ -101,7 +103,9 @@
       "logged_at": "2026-11-09T16:55:00+07:00",
       "planned_exercise_id": "C02",
       "planned_exercise_name": "Test Kettlebell Carry",
-      "duration_s": 55
+      "duration_s": 55,
+      "rir": 0,
+      "failed": false
     },
     {
       "set_id": "064e95db-5b3c-584a-918c-b937d655e751",
@@ -131,7 +135,9 @@
       "logged_at": "2026-11-09T17:02:00+07:00",
       "planned_exercise_id": "D02",
       "planned_exercise_name": "Test Bodyweight Crunch",
-      "reps": 17
+      "reps": 17,
+      "rir": 4,
+      "failed": false
     }
   ]
 }

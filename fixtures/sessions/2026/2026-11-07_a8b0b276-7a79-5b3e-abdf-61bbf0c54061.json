@@ -55,7 +55,9 @@
       "logged_at": "2026-11-07T16:51:00+07:00",
       "planned_exercise_id": "A01",
       "planned_exercise_name": "Test Machine Press",
-      "reps": 9
+      "reps": 9,
+      "rir": 3,
+      "failed": false
     },
     {
       "set_id": "ea42bc65-775a-5e1a-9906-a30e75640510",
@@ -70,7 +72,9 @@
       "logged_at": "2026-11-07T16:54:00+07:00",
       "planned_exercise_id": "A01",
       "planned_exercise_name": "Test Machine Press",
-      "reps": 8
+      "reps": 8,
+      "rir": 1,
+      "failed": false
     },
     {
       "set_id": "907c82b9-d598-5e26-83b6-bd9ed68fe1d7",
@@ -115,7 +119,9 @@
       "logged_at": "2026-11-07T17:05:00+07:00",
       "planned_exercise_id": "B01",
       "planned_exercise_name": "Test Cable Row",
-      "reps": 11
+      "reps": 11,
+      "rir": 2,
+      "failed": false
     },
     {
       "set_id": "5cec3879-3982-5ccd-922b-0c2991993390",
@@ -160,7 +166,9 @@
       "logged_at": "2026-11-07T17:15:00+07:00",
       "planned_exercise_id": "B03",
       "planned_exercise_name": "Test Assisted Pull-Up",
-      "reps": 6
+      "reps": 6,
+      "rir": 5,
+      "failed": false
     },
     {
       "set_id": "34ca08a3-26f0-5dab-af8c-d485ea638c1a",
@@ -205,7 +213,9 @@
       "logged_at": "2026-11-07T17:25:00+07:00",
       "planned_exercise_id": "D01",
       "planned_exercise_name": "Test Plank",
-      "duration_s": 41
+      "duration_s": 41,
+      "rir": 2,
+      "failed": false
     },
     {
       "set_id": "2e209255-ef4f-5751-b401-c56de27f8221",

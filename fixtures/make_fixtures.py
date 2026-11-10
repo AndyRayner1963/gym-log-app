@@ -38,8 +38,10 @@ setup = dict(format=1, published_at=PUBLISHED, hash=hashlib.sha256(canon.encode(
 json.dump(setup, open(os.path.join(HERE, 'setup.json'), 'w', encoding='utf-8'), indent=2, ensure_ascii=False)
 BYID = {e['id']: e for e in exercises}
 
-def session(label, start, workout, status, slots, comment='', revision=None, ended=None, edits=()):
-    """slots: list of (planned_id or None, [(actual_id, weight, reps_or_seconds, minutes_after_start), ...])"""
+def session(label, start, workout, status, slots, comment='', revision=None, ended=None, edits=(), rir=None):
+    """slots: list of (planned_id or None, [(actual_id, weight, reps_or_seconds, minutes_after_start), ...])
+    rir: {(position, set_number): 0-5 or 'F'}.  'F' (failure) is stored as rir 0 with failed true.
+    Sets without an entry carry neither field (RIR not recorded, as in files made before 1.1.0)."""
     sid = uid(label); start = datetime.fromisoformat(start).replace(tzinfo=TZ); sets = []; last = start
     for pos, (planned, done) in enumerate(slots, 1):
         for n, (actual, w, val, mins) in enumerate(done, 1):
@@ -50,6 +52,8 @@ def session(label, start, workout, status, slots, comment='', revision=None, end
             if planned: s['planned_exercise_id'] = planned; s['planned_exercise_name'] = BYID[planned]['name']
             s['reps' if e['measure'] == 'reps' else 'duration_s'] = val
             if (pos, n) in edits: s['edited_at'] = iso(t + timedelta(days=1))
+            if rir and (pos, n) in rir:
+                v = rir[(pos, n)]; s['rir'] = 0 if v == 'F' else v; s['failed'] = v == 'F'
             sets.append(s)
     d = dict(format=1, session_id=sid, revision=revision or len(sets) + 2, status=status, date=start.date().isoformat(),
              started_at=iso(start), workout_name=workout, comment=comment, setup_published_at=PUBLISHED, app_version='1.0.0')
@@ -82,16 +86,18 @@ session('s3', '2026-11-07T16:42:00', 'Test Upper', 'closed', [
   ('B01', [('B01', 45, 12, 16), ('B02', 35, 12, 20), ('B02', 35, 11, 23)]),
   ('B03', [('B03', 25, 8, 27), ('B03', 20, 6, 30), ('B03', 20, 6, 33)]),
   ('D01', [('D01', 2.5, 45, 37), ('D01', 2.5, 45, 40), ('D01', 2.5, 41, 43)]),
-  (None,  [('D02', 0, 20, 46), ('D02', 0, 18, 48)])], comment='Cable row station busy', ended='2026-11-07T17:33:00')
+  (None,  [('D02', 0, 20, 46), ('D02', 0, 18, 48)])], comment='Cable row station busy', ended='2026-11-07T17:33:00',
+  rir={(1, 3): 3, (1, 4): 1, (2, 3): 2, (3, 3): 5, (4, 3): 2})
 # S4 free-form, auto-closed: dumbbell (each), barbell (plates only, 1.25 steps)
 session('s4', '2026-11-08T10:10:00', '', 'auto_closed', [
   (None, [('A03', 14, 12, 4), ('A03', 14, 12, 7), ('A03', 16, 9, 10)]),
-  (None, [('B04', 21.25, 10, 15), ('B04', 22.5, 10, 18)])])
+  (None, [('B04', 21.25, 10, 15), ('B04', 22.5, 10, 18)])], rir={(1, 3): 1})
 # S5 corrected later: one set edited the next day, revision raised
 session('s5', '2026-11-09T16:30:00', 'Test Lower', 'closed', [
   ('C01', [('C01', 130, 13, 4), ('C01', 130, 12, 8), ('C01', 130, 12, 12)]),
   ('C02', [('C02', 28, 75, 17), ('C02', 30, 58, 21), ('C02', 30, 55, 25)]),
-  ('D02', [('D02', 2.5, 18, 29), ('D02', 2.5, 17, 32)])], comment='Carry moved up to 30', revision=14, ended='2026-11-09T17:05:45', edits={(2, 2)})
+  ('D02', [('D02', 2.5, 18, 29), ('D02', 2.5, 17, 32)])], comment='Carry moved up to 30', revision=14, ended='2026-11-09T17:05:45', edits={(2, 2)},
+  rir={(1, 3): 'F', (2, 3): 0, (3, 2): 4})
 # S6 deleted session: file kept, no sets
 session('s6', '2026-11-10T06:50:00', 'Test Upper', 'deleted', [], revision=5)
 # S7 still open (uploaded mid-session): must be left out of the history
