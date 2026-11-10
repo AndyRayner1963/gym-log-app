@@ -33,6 +33,12 @@ const OUT = path.join(__dirname, 'screenshots');
   // Done state: the exercise stays after its last planned set (v1.0.1).
   await page.waitForSelector('[data-dock=complete]');
   await shot('02c-done-state');
+  // v1.1.0: the RIR of the last set, set to 2 (one tap of minus), as in mockup frame B.
+  await page.clock.fastForward(1100);
+  await page.click('.dock [data-kind=rir] [data-step=minus]');
+  await H.waitFor(async () => (await H.openSession(page)).doc.sets[2].rir === 2, { message: 'RIR saved' });
+  await page.waitForSelector('.ex.current .set .rir');
+  await shot('02d-done-state-rir');
   await H.tapNext(page);
   await H.logSet(page, { advance: 240000 });
   await page.clock.fastForward(120000);
@@ -65,6 +71,14 @@ const OUT = path.join(__dirname, 'screenshots');
   await page.fill('[data-sheet=edit] input[name=edit-weight]', '102.25');
   await shot('06-edit-set-panel');
   await page.click('[data-sheet=edit] [data-action=cancel]');
+  // Edit Set on the set that carries the RIR (v1.1.0).
+  const rirSet = (await H.openSession(page)).doc.sets.find(s => s.position === 1 && s.set_number === 3).set_id;
+  await H.goSlot(page, 1);
+  await page.click(`[data-set="${rirSet}"]`);
+  await page.waitForSelector('[data-sheet=edit]');
+  await shot('06b-edit-set-rir');
+  await page.click('[data-sheet=edit] [data-action=cancel]');
+  await H.goSlot(page, 2);
 
   // Add Exercise panel: groups, then the exercises in one group.
   await page.click('[data-action=add-exercise]');

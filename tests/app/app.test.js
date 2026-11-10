@@ -677,7 +677,8 @@ test('Contract: a session file made by the app matches the fixture shape', async
   const fixtureClosed = fixtures.find(d => d.status === 'closed');
   const topKeys = Object.keys(fixtureClosed).sort();
   const fxSet = (measure, planned) => fixtures.flatMap(d => d.sets).find(s => s.measure === measure && !!s.planned_exercise_id === planned && !s.edited_at);
-  const setKeys = s => Object.keys(s).filter(k => k !== 'edited_at').sort();
+  // edited_at and the RIR pair (v1.1.0) are optional; they are checked separately below.
+  const setKeys = s => Object.keys(s).filter(k => !['edited_at', 'rir', 'failed'].includes(k)).sort();
   // The fixtures have planned sets of both measures but an unplanned set only for reps, so the
   // unplanned shape is the planned one without the planned pair; checked here against reps.
   const expectedKeys = (measure, planned) => {
@@ -702,6 +703,12 @@ test('Contract: a session file made by the app matches the fixture shape', async
       assert.deepEqual(setKeys(s), expectedKeys(s.measure, !!s.planned_exercise_id), `set keys for ${s.measure}, planned=${!!s.planned_exercise_id}`);
       assert.match(s.logged_at, ISO);
       if (s.edited_at !== undefined) assert.match(s.edited_at, ISO);
+      assert.equal('rir' in s, 'failed' in s, 'rir and failed come together');
+      if ('rir' in s) {
+        assert.ok(Number.isInteger(s.rir) && s.rir >= 0 && s.rir <= 5);
+        assert.equal(typeof s.failed, 'boolean');
+        if (s.failed) assert.equal(s.rir, 0);
+      }
       assert.equal(typeof s.weight_kg, 'number');
       if (s.measure === 'reps') assert.ok(Number.isInteger(s.reps)); else assert.ok(Number.isInteger(s.duration_s));
       const ex = SETUP.exercises.find(e => e.id === s.exercise_id);
@@ -712,6 +719,8 @@ test('Contract: a session file made by the app matches the fixture shape', async
       const nums = doc.sets.filter(s => s.position === pos).map(s => s.set_number).sort((a, b) => a - b);
       assert.deepEqual(nums, nums.map((_, i) => i + 1));
     }
+    // The fixtures carry the RIR pair too, in the same shape.
+    for (const f of fixtures) for (const s of f.sets) assert.equal('rir' in s, 'failed' in s);
   }
   const preset = fake.sessionPaths().map(p => fake.json(p)).find(d => d.workout_name === 'Test Upper');
   const free = fake.sessionPaths().map(p => fake.json(p)).find(d => d.workout_name === '');
@@ -723,6 +732,10 @@ test('Contract: a session file made by the app matches the fixture shape', async
   assert.equal(added.planned_exercise_id, undefined, 'added exercise has no planned exercise');
   assert.ok(free.sets.every(s => s.planned_exercise_id === undefined && s.planned_exercise_name === undefined));
   assert.equal(preset.comment, 'Contract check');
+  // RIR: the slot-completing sets of slot 1 (set 3, then the extra set 4) carry the default; the rest none.
+  assert.deepEqual(preset.sets.filter(s => s.position === 1).sort((a, b) => a.set_number - b.set_number).map(s => [s.rir, s.failed]),
+    [[undefined, undefined], [undefined, undefined], [3, false], [3, false]]);
+  assert.ok(preset.sets.filter(s => s.position !== 1).every(s => s.rir === undefined), 'no RIR on slots that are not complete');
   await app.close();
 });
 
@@ -1307,10 +1320,14 @@ test('Done state: after the last planned set the exercise stays; Next and + Extr
   await page.click('[data-sheet=add] [data-group=Core]');
   await page.click('[data-sheet=add] [data-ex=D02]');
   await page.waitForSelector('[data-dock=entry]');
+  // v1.1.0: they count as 3 planned sets inside the app, so after the third the done state appears.
   await H.setEntry(page, 0, 15);
-  for (let i = 0; i < 4; i++) await H.logSet(page);
+  for (let i = 0; i < 2; i++) await H.logSet(page);
   assert.ok(await page.$('[data-dock=entry]'));
-  assert.match(await page.textContent('.dock .title b'), /^Set 5 · Test Bodyweight Crunch$/);
+  assert.match(await page.textContent('.dock .title b'), /^Set 3 of 3 · Test Bodyweight Crunch$/);
+  await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete]');
+  assert.ok(await page.$('.ex.current[data-slot="1"]'), 'free-form stays on the same exercise');
   assert.deepEqual(app.errors, []);
   await app.close();
 });
@@ -1403,5 +1420,387 @@ test('Done state corrections: Undo, Delete and Edit from the done state leave a 
   assert.equal(rec.slots[0].extra, 0);
   assert.deepEqual(rec.doc.sets.filter(s => s.position === 1).map(s => s.set_number), [1, 2]);
   assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// v1.1.0: reps in reserve (RIR) on the last set of an exercise.
+
+const RIR = '.dock [data-kind=rir]';
+const rirShown = page => page.textContent(`${RIR} output`);
+/** Slot sets of the open session, in set order: [{n, rir, failed, hasRir, edited}] */
+async function slotRir(page, pos) {
+  const rec = await H.openSession(page);
+  return rec.doc.sets.filter(s => s.position === pos).sort((a, b) => a.set_number - b.set_number)
+    .map(s => ({ n: s.set_number, rir: s.rir, failed: s.failed, hasRir: 'rir' in s || 'failed' in s, edited: 'edited_at' in s }));
+}
+/** Tap a RIR button and wait until the stored value is the expected one. */
+async function tapRir(page, step, pos, n, rir, failed) {
+  await page.click(`${RIR} [data-step=${step}]`);
+  await H.waitFor(async () => { const s = (await slotRir(page, pos)).find(x => x.n === n); return s.rir === rir && s.failed === failed; }, { message: `set ${n} rir ${rir}${failed ? ' F' : ''}` });
+}
+
+test('RIR (a): logging the last planned set stores rir 3, failed false, in the database and the uploaded file; earlier sets have none', async () => {
+  const fake = new FakeGitHub();
+  const app = await start({ fake });
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  assert.equal(await page.$(RIR), null, 'no RIR before the last planned set');
+  await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete]');
+  const sets = await slotRir(page, 1);
+  assert.deepEqual(sets.map(s => [s.n, s.hasRir, s.rir, s.failed]), [[1, false, undefined, undefined], [2, false, undefined, undefined], [3, true, 3, false]]);
+  assert.equal(sets[2].edited, false);
+  // The RIR is part of the set's own write: one revision for the log.
+  const rec = await H.openSession(page);
+  assert.equal(rec.doc.revision, 4, 'start + three logs');
+  // Layout per mockup frame B.
+  assert.equal(await page.textContent(`${RIR} label`), 'RIR · Set 3');
+  assert.equal(await page.innerText(`${RIR} label`), 'RIR · SET 3');
+  assert.equal(await rirShown(page), '3');
+  assert.equal(await page.textContent(`${RIR} small`), 'reps left in the tank');
+  assert.equal(norm(await page.innerText('.dock .steps [data-action=extra-set]')), '+ Extra set');
+  assert.equal(await page.locator('.dock [data-action=extra-set]').count(), 1, 'the old full-width button is gone');
+  const geo = await page.evaluate(() => {
+    const r = s => document.querySelector(s).getBoundingClientRect();
+    return { rir: r('.dock [data-kind=rir]'), extra: r('.dock [data-action=extra-set]'), next: r('[data-action=next-dock]'), status: r('[data-done]') };
+  });
+  assert.ok(geo.rir.left < geo.extra.left && Math.abs(geo.rir.top - geo.extra.top) < 1 && Math.abs(geo.rir.height - geo.extra.height) < 1, `RIR left, + Extra set right, same height (${JSON.stringify(geo)})`);
+  assert.ok(geo.status.bottom <= geo.rir.top && geo.rir.bottom <= geo.next.top, 'status, then the row, then Next');
+  // The set row shows it.
+  assert.match(norm(await page.innerText(`.ex.current [data-set="${rec.doc.sets[2].set_id}"]`)), /40 kg × 12 · RIR 3/);
+  assert.doesNotMatch(norm(await page.innerText(`.ex.current [data-set="${rec.doc.sets[0].set_id}"]`)), /RIR/);
+  await H.waitFor(() => fake.sessionPaths().length === 1 && fake.json(fake.sessionPaths()[0]).sets.length === 3, { message: 'uploaded' });
+  const up = fake.json(fake.sessionPaths()[0]).sets.sort((a, b) => a.set_number - b.set_number);
+  assert.deepEqual(up.map(s => [s.rir, s.failed]), [[undefined, undefined], [undefined, undefined], [3, false]]);
+  assert.ok(!('rir' in up[0]) && !('failed' in up[0]));
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('RIR (b): minus to F stores rir 0 failed true; plus to 5+ stores 5 and stops; each tap one saved change', async () => {
+  const fake = new FakeGitHub();
+  const app = await start({ fake });
+  const { page } = app;
+  await begin(page);
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  await page.waitForSelector(RIR);
+  await page.clock.fastForward(1100);
+  const rev0 = (await H.openSession(page)).doc.revision;
+  await tapRir(page, 'minus', 1, 3, 2, false);
+  await tapRir(page, 'minus', 1, 3, 1, false);
+  await tapRir(page, 'minus', 1, 3, 0, false);
+  assert.equal(await rirShown(page), '0');
+  await tapRir(page, 'minus', 1, 3, 0, true);
+  assert.equal(await rirShown(page), 'F');
+  assert.equal(await page.$eval(`${RIR} [data-step=minus]`, b => b.disabled), true, 'minus stops at F');
+  await page.click(`${RIR} [data-step=minus]`, { force: true });
+  await page.waitForTimeout(200);
+  let rec = await H.openSession(page);
+  assert.equal(rec.doc.revision, rev0 + 4, 'one revision per tap, none for the stopped tap');
+  assert.deepEqual((await slotRir(page, 1))[2], { n: 3, rir: 0, failed: true, hasRir: true, edited: false });
+  assert.match(norm(await page.innerText(`.ex.current [data-set="${rec.doc.sets[2].set_id}"]`)), /40 kg × 12 · F/);
+  for (const v of [0, 1, 2, 3, 4]) await tapRir(page, 'plus', 1, 3, v, false);
+  await tapRir(page, 'plus', 1, 3, 5, false);
+  assert.equal(await rirShown(page), '5+');
+  assert.equal(await page.$eval(`${RIR} [data-step=plus]`, b => b.disabled), true, 'plus stops at 5+');
+  await page.click(`${RIR} [data-step=plus]`, { force: true });
+  await page.waitForTimeout(200);
+  rec = await H.openSession(page);
+  assert.equal(rec.doc.revision, rev0 + 10);
+  assert.equal(rec.doc.sets[2].rir, 5);
+  assert.equal('edited_at' in rec.doc.sets[2], false, 'RIR in the done state is not a correction');
+  assert.match(norm(await page.innerText(`.ex.current [data-set="${rec.doc.sets[2].set_id}"]`)), /· RIR 5\+/);
+  // Uploaded: the latest value, one file.
+  await H.waitFor(async () => { const r = await H.openSession(page); return !r.dirty && fake.sessionPaths().length === 1; }, { message: 'uploaded' });
+  const up = fake.json(fake.sessionPaths()[0]);
+  assert.equal(up.revision, rec.doc.revision);
+  assert.deepEqual([up.sets[2].rir, up.sets[2].failed], [5, false]);
+  // A reload shows the stored value.
+  await page.reload();
+  await H.ready(page);
+  await page.waitForSelector(RIR);
+  assert.equal(await rirShown(page), '5+');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('RIR (c): extra set: the earlier set keeps its value (changed or untouched); the new last set gets 3 and the control applies to it', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  await page.waitForSelector(RIR);
+  await page.clock.fastForward(1100);
+  await tapRir(page, 'minus', 1, 3, 2, false);
+  await H.tapExtra(page);
+  assert.equal(await page.$(RIR), null, 'steppers for the extra set, no RIR');
+  assert.deepEqual((await slotRir(page, 1)).map(s => s.rir), [undefined, undefined, 2], 'asking for an extra set changes nothing');
+  await H.logSet(page);
+  await page.waitForSelector(RIR);
+  assert.equal(await page.textContent(`${RIR} label`), 'RIR · Set 4');
+  assert.equal(await rirShown(page), '3');
+  assert.deepEqual((await slotRir(page, 1)).map(s => [s.rir, s.failed]), [[undefined, undefined], [undefined, undefined], [2, false], [3, false]]);
+  await page.clock.fastForward(1100);
+  await tapRir(page, 'plus', 1, 4, 4, false);
+  assert.deepEqual((await slotRir(page, 1)).map(s => s.rir), [undefined, undefined, 2, 4], 'the control changes set 4 only');
+  // Untouched default: set 3 keeps 3 after an extra set (never cleared).
+  await H.tapNext(page);
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  await H.tapExtra(page);
+  await H.logSet(page);
+  assert.deepEqual((await slotRir(page, 2)).map(s => s.rir), [undefined, undefined, 3, 3]);
+  // Undo the extra set: set 3 is the last again, with its value, and the control applies to it.
+  await page.click('[data-action=undo]');
+  await page.click('[data-dialog=undo] [data-role=ok]');
+  await H.waitFor(async () => (await slotRir(page, 2)).length === 3, { message: 'undo' });
+  await page.waitForSelector(RIR);
+  assert.equal(await page.textContent(`${RIR} label`), 'RIR · Set 3');
+  assert.equal(await rirShown(page), '3');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('RIR (d): a timed exercise gets the RIR stepper with "time left in the tank"', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.goSlot(page, 4);
+  await page.waitForSelector('.dock input[name=seconds]');
+  await H.setEntry(page, 0, 45);
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  await page.waitForSelector(RIR);
+  assert.equal(await page.textContent(`${RIR} small`), 'time left in the tank');
+  assert.equal(await page.textContent(`${RIR} label`), 'RIR · Set 3');
+  assert.deepEqual((await slotRir(page, 4)).map(s => [s.rir, s.failed]), [[undefined, undefined], [undefined, undefined], [3, false]]);
+  await page.clock.fastForward(1100);
+  await tapRir(page, 'minus', 4, 3, 2, false);
+  // Edit Set on a timed set says the same.
+  const id = (await H.openSession(page)).doc.sets.find(s => s.position === 4 && s.set_number === 1).set_id;
+  await page.click(`[data-set="${id}"]`);
+  await page.waitForSelector('[data-sheet=edit]');
+  assert.equal(await page.textContent('[data-sheet=edit] [data-kind=rir] small'), 'time left in the tank');
+  await page.click('[data-sheet=edit] [data-action=cancel]');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('RIR (e): free-form and added exercises reach the done state after set 3; nothing about planned sets is written', async () => {
+  const fake = new FakeGitHub();
+  const app = await start({ fake });
+  const { page } = app;
+  // Free-form.
+  await begin(page, '');
+  await page.click('[data-sheet=add] [data-group=Core]');
+  await page.click('[data-sheet=add] [data-ex=D02]');
+  await page.waitForSelector('[data-dock=entry]');
+  await H.setEntry(page, 0, 15);
+  await H.logSet(page);
+  assert.ok(await page.$('[data-dock=entry]'), 'sets 1 and 2: the panel stays on the same exercise, ready for the next set');
+  assert.match(await page.textContent('.dock .title b'), /^Set 2 of 3 · Test Bodyweight Crunch$/);
+  await H.logSet(page);
+  assert.ok(await page.$('[data-dock=entry]'));
+  await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete]');
+  assert.ok(await page.$('.ex.current[data-slot="1"]'));
+  assert.match(norm(await page.innerText('[data-done=all]')), /^All planned sets logged 3 of 3 sets done · Test Bodyweight Crunch$/);
+  assert.equal(await rirShown(page), '3');
+  assert.ok(await page.$('.dock [data-action=extra-set]'));
+  assert.ok(await page.$('[data-action=undo]') && await page.$('[data-action=add-exercise]'), 'minor row');
+  assert.equal(norm(await page.innerText('[data-action=exercises]')), 'Exercises 1 of 1 ▾');
+  assert.match((await H.panelInfo(page))[0].text, /Test Bodyweight Crunch.*3 sets$/, 'the panel still shows no plan for it');
+  // + Extra set works for it too.
+  await H.tapExtra(page);
+  assert.match(await page.textContent('.dock .title b'), /^Set 4 of 4 · Test Bodyweight Crunch$/);
+  await H.logSet(page);
+  await page.waitForSelector(RIR);
+  assert.equal(norm(await page.innerText('[data-done=all] span')), '4 sets done (3 planned) · Test Bodyweight Crunch');
+  assert.deepEqual((await slotRir(page, 1)).map(s => s.rir), [undefined, undefined, 3, 3]);
+  const freeId = (await H.openSession(page)).id;
+  await endWorkout(page);
+  await H.waitFor(() => fake.sessionPaths().some(p => p.includes(freeId) && fake.json(p).status === 'closed'), { message: 'free-form uploaded' });
+  const freePath = fake.sessionPaths().find(p => p.includes(freeId));
+  const freeText = fake.get(freePath).text || JSON.stringify(fake.json(freePath));
+  assert.doesNotMatch(freeText, /planned/, 'no planned exercise, no planned sets in the file');
+  assert.deepEqual(Object.keys(fake.json(freePath)).sort(), Object.keys(H.fixtureDoc('a8b0b276')).sort(), 'no new top-level fields');
+
+  // An exercise added during a preset workout.
+  await begin(page);
+  await page.click('[data-action=add-exercise]');
+  await page.click('[data-sheet=add] [data-group=Legs]');
+  await page.click('[data-sheet=add] [data-ex=C01]');
+  await page.waitForSelector('.ex.current[data-slot="5"]');
+  for (let i = 0; i < 2; i++) await H.logSet(page);
+  assert.ok(await page.$('[data-dock=entry]'));
+  await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete] [data-action=next-dock]');
+  assert.equal(await page.getAttribute('[data-action=next-dock]', 'data-slot'), '1', 'Next goes to the first exercise with planned sets left');
+  assert.equal(await rirShown(page), '3');
+  assert.equal(norm(await page.innerText('[data-action=exercises]')), 'Exercises 5 of 5 ▾');
+  const panel = await H.panelInfo(page);
+  assert.match(panel.find(i => i.slot === 5).text, /3 sets · added$/);
+  assert.match(panel.find(i => i.slot === 1).text, /not started · 3 × 8–12 reps/);
+  const added = (await H.openSession(page)).doc.sets.filter(s => s.position === 5);
+  assert.ok(added.every(s => !('planned_exercise_id' in s) && !('planned_exercise_name' in s)));
+  assert.deepEqual(added.map(s => s.rir), [undefined, undefined, 3]);
+  await H.tapNext(page);
+  assert.ok(await page.$('[data-dock=entry]'));
+  // Resume card unchanged.
+  await page.click('[data-action=home]');
+  assert.equal(norm(await page.innerText('[data-action=resume]')), 'Resume Test Upper 3 sets logged · started 16:30 ›');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('RIR (f): Edit Set on a past session from History changes RIR, sets edited_at, raises the revision, uploads once; "–" removes it', async () => {
+  const fake = new FakeGitHub();
+  const app = await start({ fake });
+  const { page } = app;
+  const target = H.fixtureDoc('a8b0b276');
+  const set1 = target.sets.find(s => s.position === 1 && s.set_number === 1);
+  const set4 = target.sets.find(s => s.position === 1 && s.set_number === 4);
+  const path = `sessions/2026/${target.date}_${target.session_id}.json`;
+  const stored = async () => (await H.readDB(page)).sessions.find(s => s.id === target.session_id);
+  await page.click('[data-nav=history]');
+  await page.click(`[data-session="${target.session_id}"]`);
+  await page.waitForSelector('#app[data-view=session]');
+  // Rows show the RIR where recorded, and nothing where not.
+  assert.match(norm(await page.innerText(`[data-set="${set4.set_id}"]`)), /42\.5 kg × 8 · RIR 1/);
+  assert.doesNotMatch(norm(await page.innerText(`[data-set="${set1.set_id}"]`)), /RIR|· F/);
+  // A set with no RIR: "–", then + gives F, 0, 1.
+  await page.click(`[data-set="${set1.set_id}"]`);
+  await page.waitForSelector('[data-sheet=edit]');
+  const fig = () => page.textContent('[data-sheet=edit] [data-kind=rir] output');
+  assert.equal(await fig(), '–');
+  assert.equal(await page.$eval('[data-sheet=edit] [data-kind=rir] [data-step=minus]', b => b.disabled), true);
+  for (const v of ['F', '0', '1']) { await page.click('[data-sheet=edit] [data-kind=rir] [data-step=plus]'); assert.equal(await fig(), v); }
+  assert.equal(fake.puts.length, 0, 'nothing written before Save');
+  await page.click('[data-sheet=edit] [data-action=save]');
+  await page.waitForSelector('[data-sheet=edit]', { state: 'detached' });
+  await H.waitFor(async () => { const r = await stored(); return r.doc.revision === target.revision + 1 && !r.dirty; }, { message: 'saved and uploaded' });
+  let r = await stored();
+  let s = r.doc.sets.find(x => x.set_id === set1.set_id);
+  assert.deepEqual([s.rir, s.failed], [1, false]);
+  assert.match(s.edited_at, ISO);
+  assert.equal(s.weight_kg, set1.weight_kg);
+  assert.equal(fake.puts.filter(p => p.path === path).length, 1, 'uploaded once');
+  assert.deepEqual(fake.json(path), r.doc);
+  assert.match(norm(await page.innerText(`[data-set="${set1.set_id}"]`)), /· RIR 1/);
+  // Back to "–": both fields go.
+  await page.click(`[data-set="${set1.set_id}"]`);
+  await page.waitForSelector('[data-sheet=edit]');
+  assert.equal(await fig(), '1');
+  for (const v of ['0', 'F', '–']) { await page.click('[data-sheet=edit] [data-kind=rir] [data-step=minus]'); assert.equal(await fig(), v); }
+  await page.click('[data-sheet=edit] [data-action=save]');
+  await H.waitFor(async () => { const x = await stored(); return x.doc.revision === target.revision + 2 && !x.dirty; }, { message: 'second save uploaded' });
+  r = await stored();
+  s = r.doc.sets.find(x => x.set_id === set1.set_id);
+  assert.ok(!('rir' in s) && !('failed' in s), 'not recorded: both fields removed');
+  assert.equal(fake.puts.filter(p => p.path === path).length, 2);
+  assert.ok(!('rir' in fake.json(path).sets.find(x => x.set_id === set1.set_id)));
+  // Cancel and an unchanged Save write nothing.
+  await page.click(`[data-set="${set4.set_id}"]`);
+  await page.waitForSelector('[data-sheet=edit]');
+  assert.equal(await fig(), '1');
+  await page.click('[data-sheet=edit] [data-action=save]');
+  await page.waitForSelector('[data-sheet=edit]', { state: 'detached' });
+  await page.waitForTimeout(200);
+  assert.equal((await stored()).doc.revision, target.revision + 2);
+  // In the current session the Edit Set panel corrects RIR the same way (edited_at set).
+  await page.click('[data-action=back]');
+  await page.click('[data-action=back]');
+  await begin(page);
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  const cur = (await H.openSession(page)).doc.sets[2];
+  await page.click(`[data-set="${cur.set_id}"]`);
+  await page.waitForSelector('[data-sheet=edit]');
+  assert.equal(await fig(), '3');
+  await page.click('[data-sheet=edit] [data-kind=rir] [data-step=minus]');
+  await page.click('[data-sheet=edit] [data-action=save]');
+  await H.waitFor(async () => (await slotRir(page, 1))[2].rir === 2, { message: 'edited in the open session' });
+  assert.equal((await slotRir(page, 1))[2].edited, true);
+  await page.waitForSelector('[data-sheet=edit]', { state: 'detached' });
+  assert.equal(await rirShown(page), '2', 'the done state follows the correction');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('RIR (g): double-tap guard: a second tap within a second of Log changes no RIR and adds no extra set', async () => {
+  const app = await start();
+  const { page } = app;
+  await begin(page);
+  await H.logSet(page);
+  await H.logSet(page);
+  await page.clock.fastForward(1100);
+  await page.click('[data-action=log]');
+  await page.waitForSelector(RIR);
+  const rev = (await H.openSession(page)).doc.revision;
+  // Second taps on every control of the RIR row, within the second.
+  await page.click(`${RIR} [data-step=minus]`);
+  await page.click(`${RIR} [data-step=plus]`);
+  await page.click('.dock [data-action=extra-set]');
+  await page.waitForTimeout(300);
+  assert.equal(await rirShown(page), '3', 'the figure did not move');
+  let rec = await H.openSession(page);
+  assert.equal(rec.doc.revision, rev, 'nothing written');
+  assert.equal(rec.doc.sets[2].rir, 3);
+  assert.equal(rec.slots[0].extra, 0, 'no extra set');
+  assert.ok(await page.$('[data-dock=complete]'));
+  // A double tap where the Log button was lands on Next and is ignored as well (existing guard).
+  // After the second, the RIR buttons work on one tap.
+  await page.clock.fastForward(1100);
+  await tapRir(page, 'plus', 1, 3, 4, false);
+  rec = await H.openSession(page);
+  assert.equal(rec.doc.revision, rev + 1);
+  await app.close();
+});
+
+test('RIR (h): restored fixture sessions with and without RIR are stored and shown without error', async () => {
+  const fake = new FakeGitHub();
+  fake.put('setup.json', JSON.stringify(SETUP, null, 2));
+  for (const s of H.FIXTURE_SESSIONS) fake.put(s.path, s.text);
+  const app = await start({ fake, history: false });
+  const { page } = app;
+  await page.waitForSelector('[data-banner=restore]');
+  await page.click('[data-banner=restore] [data-action=restore]');
+  await page.waitForSelector('[data-banner=restore]', { state: 'detached' });
+  await H.waitFor(async () => (await H.readDB(page)).sessions.length === H.FIXTURE_SESSIONS.length, { message: 'restored' });
+  const db = await H.readDB(page);
+  for (const id of ['a8b0b276', '1f246a0c', '2bd74d3b']) {
+    const doc = H.fixtureDoc(id);
+    assert.deepEqual(db.sessions.find(r => r.id === doc.session_id).doc, doc, `${id} stored exactly as downloaded`);
+  }
+  await page.click('[data-nav=history]');
+  for (const id of ['a8b0b276', '1f246a0c', '4e418613', '2bd74d3b', 'c9d822f7']) {
+    const doc = H.fixtureDoc(id);
+    await page.click(`[data-session="${doc.session_id}"]`);
+    await page.waitForSelector('#app[data-view=session]');
+    const shown = await page.$$eval('#app .slotcard [data-set]', els => els.map(e => ({ id: e.dataset.set, rir: e.querySelector('.rir') ? e.querySelector('.rir').textContent : null })));
+    assert.equal(shown.length, doc.sets.length);
+    for (const s of doc.sets) {
+      const want = !('rir' in s) ? null : s.failed ? ' · F' : ` · RIR ${s.rir >= 5 ? '5+' : s.rir}`;
+      assert.equal(shown.find(x => x.id === s.set_id).rir, want, `${id} set ${s.position}/${s.set_number}`);
+    }
+    await page.click('[data-action=back]');
+    await page.waitForSelector('#app[data-view=history]');
+  }
+  // The failed set reads "F"; a fixture with no RIR at all shows none.
+  const failed = H.fixtureDoc('1f246a0c').sets.find(s => s.failed);
+  await page.click(`[data-session="${H.fixtureDoc('1f246a0c').session_id}"]`);
+  assert.match(norm(await page.innerText(`[data-set="${failed.set_id}"]`)), /· F/);
+  await page.click(`[data-set="${failed.set_id}"]`);
+  assert.equal(await page.textContent('[data-sheet=edit] [data-kind=rir] output'), 'F');
+  await page.click('[data-sheet=edit] [data-action=cancel]');
+  // Pre-fill and the "Last time" line are unaffected by RIR in the history.
+  await page.click('[data-action=back]');
+  await page.click('[data-action=back]');
+  await begin(page, 'Test Lower');
+  const e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], ['130', '13']);
+  assert.doesNotMatch(await page.textContent('.ex.current .lasttime'), /RIR/);
+  assert.deepEqual(app.errors, []);
+  assert.deepEqual(app.consoleErrors.filter(m => !/status of 404/.test(m)), []);
   await app.close();
 });

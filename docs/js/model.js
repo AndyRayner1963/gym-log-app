@@ -12,9 +12,16 @@
 //   slots      one per exercise slot: position, planned exercise and plan, actual exercise
 //   ui         current slot, entry draft, stopwatch start
 
-import { APP_VERSION, FORMAT, clone, isoLocal, localDate, ms, now, tidy, uuid } from './util.js';
+import { APP_VERSION, FORMAT, RIR_DEFAULT, applyRir, clone, isoLocal, localDate, ms, now, tidy, uuid } from './util.js';
 
 export const AUTO_CLOSE_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Sets an unplanned slot (free-form, or an exercise added to a preset workout) counts as its plan
+ * inside the app, so it reaches the same done state (RIR, + Extra set, Next) after its third set
+ * (v1.1.0).  Never written to the session file: such slots still have no planned exercise.
+ */
+export const UNPLANNED_SETS = 3;
 
 export function sessionPath(id, date) {
   return `sessions/${date.slice(0, 4)}/${date}_${id}.json`;
@@ -95,9 +102,21 @@ export function slotPlanned(slot) {
   return slot.planned_sets ? slot.planned_sets + (slot.extra || 0) : null;
 }
 
+/** Sets in the slot's plan before extras: the workout's, or UNPLANNED_SETS for an unplanned slot. */
+export function slotBase(slot) { return slot.planned_sets || UNPLANNED_SETS; }
+
+/** Sets the slot is aiming at, including "+ Set" extras.  Never null (unlike slotPlanned). */
+export function slotTarget(slot) { return slotBase(slot) + (slot.extra || 0); }
+
+/** All the sets the slot aims at are logged: the dock shows its done state. */
 export function slotComplete(rec, slot) {
-  const p = slotPlanned(slot);
-  return p !== null && slotSets(rec.doc, slot.position).length >= p;
+  return slotSets(rec.doc, slot.position).length >= slotTarget(slot);
+}
+
+/** The set the RIR control applies to: the last logged set of the slot (highest set number). */
+export function slotLastSet(doc, pos) {
+  const sets = slotSets(doc, pos);
+  return sets.length ? sets[sets.length - 1] : null;
 }
 
 export function nextSetNumber(rec, slot) { return slotSets(rec.doc, slot.position).length + 1; }
@@ -154,6 +173,9 @@ export function withLoggedSet(rec, pos, weight, value) {
   if (ex.measure === 'time') set.duration_s = Math.round(value); else set.reps = Math.round(value);
   set.logged_at = isoLocal();
   r.doc.sets.push(set);
+  // A set that completes the slot (its last planned set, or an extra one) is the one the RIR
+  // control applies to: it starts at the default, in this same write (v1.1.0).
+  if (slotComplete(r, slot)) applyRir(set, RIR_DEFAULT);
   touch(r.doc);
   r.dirty = true;
   r.ui.draft = null;
@@ -175,13 +197,29 @@ function renumber(doc, pos) {
   slotSets(doc, pos).forEach((s, i) => { s.set_number = i + 1; });
 }
 
-export function withEditedSet(rec, setId, weight, value) {
+/** A correction (Edit Set).  rir: undefined leaves it alone; null removes it; 'F' or 0–5 sets it. */
+export function withEditedSet(rec, setId, weight, value, rir) {
   const r = clone(rec);
   const s = r.doc.sets.find(x => x.set_id === setId);
   if (!s) throw new Error('Set not found');
   s.weight_kg = tidy(weight);
   if (s.measure === 'time') s.duration_s = Math.round(value); else s.reps = Math.round(value);
+  if (rir !== undefined) applyRir(s, rir);
   s.edited_at = isoLocal();
+  touch(r.doc);
+  r.dirty = true;
+  return r;
+}
+
+/**
+ * The RIR control of the done state: rewrites rir/failed of one set.  Part of logging, not a
+ * correction, so no edited_at; still one saved change (revision + 1, upload queued).
+ */
+export function withRir(rec, setId, code) {
+  const r = clone(rec);
+  const s = r.doc.sets.find(x => x.set_id === setId);
+  if (!s) throw new Error('Set not found');
+  applyRir(s, code);
   touch(r.doc);
   r.dirty = true;
   return r;
@@ -197,7 +235,7 @@ export function withDeletedSet(rec, setId) {
   // An extra set that was asked for but not logged goes with the deleted set, so deleting
   // the last planned set brings back the steppers for that set rather than a phantom extra.
   const slot = r.slots ? r.slots.find(x => x.position === pos) : null;
-  if (slot && slot.planned_sets) slot.extra = Math.max(0, slotSets(r.doc, pos).length - slot.planned_sets);
+  if (slot) slot.extra = Math.max(0, slotSets(r.doc, pos).length - slotBase(slot));
   touch(r.doc);
   r.dirty = true;
   if (r.ui) r.ui.draft = null;
@@ -247,7 +285,7 @@ export function withAddedExercise(rec, exId) {
 export function withExtraSet(rec, pos) {
   const r = clone(rec);
   const slot = slotByPos(r, pos);
-  if (slot.planned_sets) slot.extra = (slot.extra || 0) + 1;
+  slot.extra = (slot.extra || 0) + 1;
   r.ui.current = pos;
   r.ui.draft = null;
   return r;
@@ -346,8 +384,8 @@ export function deriveSlots(doc, setup) {
       slots.push(slot);
     } else {
       slot.exercise_id = last.exercise_id;
-      if (slot.planned_sets && sets.length > slot.planned_sets) slot.extra = sets.length - slot.planned_sets;
     }
+    if (sets.length > slotBase(slot)) slot.extra = sets.length - slotBase(slot);
   }
   return slots.sort((a, b) => a.position - b.position);
 }

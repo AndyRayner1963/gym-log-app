@@ -142,4 +142,41 @@ export function targetText(measure, min, max) {
   return '';
 }
 
-export function plural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
+// ---- Reps in reserve (v1.1.0) ----
+// A set may carry rir (0–5, 5 meaning "5 or more") and failed (true when he tried another rep,
+// or more time, and could not complete it: stored as rir 0, failed true).  Both or neither.
+// In the app a value is a code: null (not recorded), 'F', or 0–5.
+
+/** The stepper's values in order.  The Edit Set panel also has null (not recorded) before 'F'. */
+export const RIR_CODES = ['F', 0, 1, 2, 3, 4, 5];
+export const RIR_DEFAULT = 3;
+
+/** The code of a set: null, 'F' or 0–5. */
+export function rirCode(set) {
+  if (!set || set.rir === undefined || set.rir === null) return null;
+  return set.failed ? 'F' : Math.max(0, Math.min(5, Math.round(Number(set.rir))));
+}
+
+/** The figure: "–", "F", "0" … "4", "5+". */
+export function rirFigure(code) {
+  if (code === null || code === undefined) return '–';
+  if (code === 'F') return 'F';
+  return code >= 5 ? '5+' : String(code);
+}
+
+/** Compact suffix for set rows: "RIR 2", "RIR 5+", "F", or "" when not recorded. */
+export function rirShort(set) {
+  const c = rirCode(set);
+  if (c === null) return '';
+  return c === 'F' ? 'F' : `RIR ${rirFigure(c)}`;
+}
+
+/** Writes a code onto a set (mutates it): null removes both fields. */
+export function applyRir(set, code) {
+  if (code === null || code === undefined) { delete set.rir; delete set.failed; return; }
+  if (code === 'F') { set.rir = 0; set.failed = true; return; }
+  set.rir = Math.max(0, Math.min(5, Math.round(Number(code))));
+  set.failed = false;
+}
+
+export function plural(n, one, many){ return `${n} ${n === 1 ? one : many}`; }

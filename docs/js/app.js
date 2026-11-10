@@ -2,7 +2,7 @@
 import * as db from './db.js';
 import * as M from './model.js';
 import * as sync from './sync.js';
-import { closeDialogs, closeSheet, confirmBox, h, messageBox, openSheet, stepper, toast } from './ui.js';
+import { closeDialogs, closeSheet, confirmBox, h, messageBox, openSheet, rirStepper, stepper, toast } from './ui.js';
 import * as U from './util.js';
 
 const state = {
@@ -531,7 +531,7 @@ function currentCard(slot) {
   const rec = state.open;
   const ex = exOf(rec, slot.exercise_id);
   const sets = M.slotSets(rec.doc, slot.position);
-  const planned = M.slotPlanned(slot);
+  const target = M.slotTarget(slot);
   const complete = M.slotComplete(rec, slot);
   const lt = M.lastTime(history(), ex.id);
   const swapped = slot.planned_exercise_id && slot.planned_exercise_id !== slot.exercise_id;
@@ -541,17 +541,16 @@ function currentCard(slot) {
   if (slot.comment) notes.push(h('div', h('span', 'Today'), slot.comment));
   const rows = sets.map(s => h('button.set.done', { type: 'button', 'data-set': s.set_id, onclick: () => openEditSet(rec.id, s.set_id) },
     h('span.n', `Set ${s.set_number}`),
-    h('span.v', shortOrFull(s), s.exercise_id !== slot.exercise_id ? h('span.other', ` · ${s.exercise_name}`) : null),
+    h('span.v', shortOrFull(s), rirEl(s), s.exercise_id !== slot.exercise_id ? h('span.other', ` · ${s.exercise_name}`) : null),
     h('span.t', `${U.hhmm(s.logged_at)} · tap to edit`)));
   if (!complete) {
     const n = sets.length + 1;
     const e = ensureEntry(slot);
     rows.push(h('div.set.active', h('span.n', `Set ${n}`), h('span.v', { id: 'active-v' }, entryText(ex, e)), h('span.t', 'now')));
-    if (planned) {
-      for (let k = n + 1; k <= planned; k++) {
-        const ls = lt && lt.sets[k - 1];
-        rows.push(h('div.set.todo', h('span.n', `Set ${k}`), h('span.v', ls ? shortOrFull(ls) : ''), h('span.t', ls ? 'last time' : '')));
-      }
+    // Sets still to come (an unplanned slot counts 3 inside the app, v1.1.0).
+    for (let k = n + 1; k <= target; k++) {
+      const ls = lt && lt.sets[k - 1];
+      rows.push(h('div.set.todo', h('span.n', `Set ${k}`), h('span.v', ls ? shortOrFull(ls) : ''), h('span.t', ls ? 'last time' : '')));
     }
   }
   const next = M.nextOpenSlot(rec, slot.position);
@@ -574,11 +573,19 @@ function currentCard(slot) {
     notes.length ? h('div.notes', notes) : null,
     h('div.lasttime', lt ? `Last time ${U.dayMon(lt.started_at)} · ${U.compactSets(lt.sets, false)}` : 'Not done before'),
     h('div.setlist', rows,
-      planned ? h('button.addset', { type: 'button', 'data-action': 'add-set', onclick: () => addExtraSet(slot.position) }, '+ Set') : null),
+      h('button.addset', { type: 'button', 'data-action': 'add-set', onclick: () => addExtraSet(slot.position) }, '+ Set')),
     nextEl);
 }
 
 function shortOrFull(s) { return U.setText(s.type, s.measure, s.weight_kg, valueOf(s)); }
+
+/** " · RIR 2" or " · F" after a set's figures, only where recorded (v1.1.0). */
+function rirEl(s) {
+  const t = U.rirShort(s);
+  return t ? h('span.rir', { 'data-rir': t }, ` · ${t}`) : null;
+}
+
+function tankText(measure) { return measure === 'time' ? 'time left in the tank' : 'reps left in the tank'; }
 
 function entryText(ex, e) {
   if (e.weight === null || e.weight === undefined || !e.value) return '–';
@@ -616,27 +623,34 @@ function dockEl() {
       minor);
   }
   const ex = exOf(rec, slot.exercise_id);
-  const planned = M.slotPlanned(slot);
+  const aim = M.slotTarget(slot);
   if (M.slotComplete(rec, slot)) {
-    // Done state (v1.0.1): the exercise stays current after its last planned set.  Next takes the
-    // Log button's place; + Extra set sits above it.  Both ignore taps for a second after a log.
+    // Done state (v1.0.1, RIR row v1.1.0): the exercise stays current after its last planned set.
+    // Next takes the Log button's place.  Where the weight and reps steppers were: the RIR of the
+    // last set (left) and + Extra set (right).  All of them ignore taps for a second after a log.
     const n = M.slotSets(rec.doc, slot.position).length;
-    const ps = slot.planned_sets;
+    const ps = M.slotBase(slot);
     const status = n > ps ? `${n} sets done (${ps} planned)` : `${n} of ${ps} sets done`;
     const next = M.nextOpenSlot(rec, slot.position);
-    const extra = h('button.btn.secondary.extra', { type: 'button', 'data-action': 'extra-set', onclick: () => addExtraSet(slot.position) }, '+ Extra set');
+    const last = M.slotLastSet(rec.doc, slot.position);
+    const rir = rirStepper({
+      label: `RIR · Set ${last.set_number}`, value: U.rirCode(last), name: 'rir', small: tankText(last.measure),
+      guard: guarded, onChange: code => changeRir(last.set_id, code),
+    });
+    const extra = h('button.btn.secondary.extracard', { type: 'button', 'data-action': 'extra-set', onclick: () => addExtraSet(slot.position) }, '+ Extra set');
+    const row = h('div.steps.donerow', rir, extra);
     if (next) {
       const nex = exOf(rec, next.exercise_id);
       return h('section.dock', { 'data-dock': 'complete' },
         h('p.donestate', { 'data-done': 'next' }, `${status} · ${ex.name}`),
-        extra,
+        row,
         h('button.log.nextbtn', { type: 'button', 'data-action': 'next-dock', 'data-slot': String(next.position), onclick: () => goNext(next.position) },
           h('span.lbl', 'Next: '), h('span.nm', nex.name), h('i', ' ›')),
         minor);
     }
     return h('section.dock', { 'data-dock': 'complete' },
       h('p.donestate', { 'data-done': 'all' }, h('b', 'All planned sets logged'), h('span', `${status} · ${ex.name}`)),
-      extra,
+      row,
       minor);
   }
   const e = ensureEntry(slot);
@@ -665,7 +679,7 @@ function dockEl() {
       h('i', sw ? '■' : '▶'), h('span', { id: 'watch-text' }, sw ? `Stop · ${clockText(Date.now() - sw.startedAt)}` : 'Start stopwatch'));
   }
   return h('section.dock', { 'data-dock': 'entry' },
-    h('div.title', h('b', `Set ${n}${planned ? ` of ${planned}` : ''} · ${ex.name}`), h('span', hint)),
+    h('div.title', h('b', `Set ${n} of ${aim} · ${ex.name}`), h('span', hint)),
     h('div.steps', left, right),
     watch,
     logBtn,
@@ -697,8 +711,11 @@ function saveDraft() {
   }).catch(() => { /* a lost draft only loses typing, never a set */ });
 }
 
+/** Wait for typed figures and RIR taps already on their way to storage. */
+async function settle() { await draftChain; await rirChain; }
+
 async function saveUi(rec) {
-  await draftChain;
+  await settle();
   try { await saveRec(rec, false); } catch (e) { return storageFailed('The change could not be saved', e); }
 }
 
@@ -714,7 +731,7 @@ async function logSet() {
   const ex = exOf(rec, slot.exercise_id);
   const n = M.nextSetNumber(rec, slot);
   try {
-    await draftChain;
+    await settle();
     const { rec: next } = M.withLoggedSet(state.open, slot.position, e.weight, e.value);
     await saveRec(next, true);      // write first: shown as logged only after this resolves
   } catch (err) {
@@ -746,7 +763,7 @@ async function toggleWatch() {
 
 async function makeCurrent(pos) {
   if (!state.open) return;
-  await draftChain;
+  await settle();
   if (state.open.ui.current !== pos) state.entry = null;
   await saveUi(M.withCurrent(state.open, pos));
   state.scrollToCurrent = true;
@@ -763,11 +780,39 @@ async function goNext(pos) {
 
 async function addExtraSet(pos) {
   if (guarded()) return;
-  await draftChain;
+  await settle();
   state.entry = null;
   await saveUi(M.withExtraSet(state.open, pos));
   state.scrollToCurrent = true;
   render();
+}
+
+/**
+ * A tap on the done state's RIR stepper: rewrite that set's rir/failed at once (one saved change,
+ * upload queued).  Taps are written in order; the screen is redrawn once the last one is stored.
+ */
+let rirChain = Promise.resolve();
+let rirPending = 0;
+function changeRir(setId, code) {
+  const recId = state.open && state.open.id;
+  if (!recId) return;
+  rirPending++;
+  rirChain = rirChain.then(async () => {
+    await draftChain;
+    if (!state.open || state.open.id !== recId || !state.open.doc.sets.find(s => s.set_id === setId)) return;
+    try {
+      await saveRec(M.withRir(state.open, setId, code), true);
+    } catch (e) {
+      rirPending = 0;
+      await storageFailed('The RIR could not be saved', e);
+      render();
+      return;
+    }
+    sync.uploadAll();
+  }).finally(() => {
+    rirPending = Math.max(0, rirPending - 1);
+    if (!rirPending && state.view === 'workout') render();
+  });
 }
 
 async function undoLast() {
@@ -776,7 +821,7 @@ async function undoLast() {
   if (!last) return;
   const r = await confirmBox({ title: `Remove the last set (${shortOrFull(last)})?`, text: `Set ${last.set_number} of ${last.exercise_name}.`, ok: 'Remove', id: 'undo' });
   if (!r.ok || !state.open || state.open.id !== rec.id) return;
-  await draftChain;
+  await settle();
   try { await saveRec(M.withUndo(state.open), true); } catch (e) { return storageFailed('The set could not be removed', e); }
   state.entry = null;
   state.scrollToCurrent = true;
@@ -795,7 +840,7 @@ async function endWorkout() {
     input: n ? { label: 'Session comment', placeholder: 'Comment (optional)', value: rec.doc.comment } : null,
   });
   if (!r.ok || !state.open || state.open.id !== rec.id) return;
-  await draftChain;
+  await settle();
   try {
     if (!n) {
       const fresh = await db.sessionGet(rec.id);
@@ -851,7 +896,7 @@ function openSwap() {
 
 async function doSwap(exId) {
   const slot = curSlot();
-  await draftChain;
+  await settle();
   state.entry = null;
   await saveUi(M.withSwap(state.open, slot.position, exId));
   render();
@@ -896,7 +941,7 @@ function openAddExercise(group) {
 }
 
 async function doAddExercise(exId) {
-  await draftChain;
+  await settle();
   state.entry = null;
   await saveUi(M.withAddedExercise(state.open, exId));
   state.scrollToCurrent = true;
@@ -914,19 +959,25 @@ function openEditSet(recId, setId) {
   const inc = ex && Number(ex.increment_kg) > 0 ? Number(ex.increment_kg) : 1;
   let w = s.weight_kg;
   let v = valueOf(s);
+  let rir = U.rirCode(s);
   const save = h('button.btn.primary', { type: 'button', 'data-action': 'save' }, 'Save');
   const upd = () => { save.disabled = w === null || !v; };
   const left = stepper({ label: U.weightLabel(s.type), value: w, step: inc, kind: 'weight', name: 'edit-weight', small: `step ${U.num(inc)} kg`, onChange: x => { w = x; upd(); } });
   const right = s.measure === 'time'
     ? stepper({ label: 'Seconds', value: v, step: 5, kind: 'secs', name: 'edit-seconds', small: 'steps of 5 s', onChange: x => { v = x; upd(); } })
     : stepper({ label: 'Reps', value: v, step: 1, kind: 'reps', name: 'edit-reps', small: '', onChange: x => { v = x; upd(); } });
+  // RIR for any set (v1.1.0), with "–" for not recorded, before F.
+  const rirEdit = rirStepper({ label: 'RIR', value: rir, name: 'edit-rir', small: tankText(s.measure), allowNone: true, onChange: c => { rir = c; } });
+  const rirHelp = h('div.rirhelp',
+    h('p.lead', h('b', 'Reps in reserve'), ` (${s.measure === 'time' ? 'time' : 'reps'} left)`),
+    h('p', h('span.k', 'F'), 'failed'), h('p', h('span.k', '5+'), 'five or more'), h('p', h('span.k', '–'), 'not recorded'));
   const del = h('button.btn.danger', { type: 'button', 'data-action': 'delete' }, 'Delete');
   save.addEventListener('click', async () => {
     if (w === null || !v) return;
     const cur = state.recs.find(r => r.id === recId);
-    if (w === s.weight_kg && v === valueOf(s)) { closeSheet(); return; }
-    await draftChain;
-    try { await saveRec(M.withEditedSet(cur.id === (state.open && state.open.id) ? state.open : cur, setId, w, v), true); }
+    if (w === s.weight_kg && v === valueOf(s) && rir === U.rirCode(s)) { closeSheet(); return; }
+    await settle();
+    try { await saveRec(M.withEditedSet(cur.id === (state.open && state.open.id) ? state.open : cur, setId, w, v, rir === U.rirCode(s) ? undefined : rir), true); }
     catch (e) { return storageFailed('The correction could not be saved', e); }
     closeSheet();
     if (state.open && state.open.id === recId) state.entry = null;
@@ -938,7 +989,7 @@ function openEditSet(recId, setId) {
     const r = await confirmBox({ title: `Delete set ${s.set_number} of ${s.exercise_name}?`, ok: 'Delete', id: 'delete-set' });
     if (!r.ok) return;
     const cur = state.open && state.open.id === recId ? state.open : state.recs.find(x => x.id === recId);
-    await draftChain;
+    await settle();
     try { await saveRec(M.withDeletedSet(cur, setId), true); } catch (e) { return storageFailed('The set could not be deleted', e); }
     closeSheet();
     if (state.open && state.open.id === recId) state.entry = null;
@@ -950,6 +1001,7 @@ function openEditSet(recId, setId) {
     h('h2', `Edit set ${s.set_number}`),
     h('p.sub', `${s.exercise_name} · logged ${U.hhmm(s.logged_at)}${s.edited_at ? ` · corrected ${U.hhmm(s.edited_at)}` : ''}`),
     h('div.steps', left, right),
+    h('div.steps.rirrow', rirEdit, rirHelp),
     h('div.btnrow', del, save),
     h('button.cancel', { type: 'button', 'data-action': 'cancel', onclick: closeSheet }, 'Cancel'),
   ]);
@@ -1006,7 +1058,7 @@ function sessionView() {
       h('div.meta', `${first.group} · ${first.type}${planned}`),
       sets.map(s => h('button.set.done', { type: 'button', 'data-set': s.set_id, onclick: () => openEditSet(rec.id, s.set_id) },
         h('span.n', `Set ${s.set_number}`),
-        h('span.v', shortOrFull(s), names.length > 1 ? h('span.other', ` · ${s.exercise_name}`) : null),
+        h('span.v', shortOrFull(s), rirEl(s), names.length > 1 ? h('span.other', ` · ${s.exercise_name}`) : null),
         h('span.t', `${U.hhmm(s.logged_at)}${s.edited_at ? ' · corrected' : ''}`))));
   });
   const comment = h('textarea.field', { rows: 3, 'aria-label': 'Session comment', name: 'comment', maxlength: 2000, placeholder: 'No comment' });

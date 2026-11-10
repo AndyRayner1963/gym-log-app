@@ -1,7 +1,7 @@
 // DOM helpers, steppers, confirmation boxes (brief 5.11), sheets and toasts.
 // All text goes in through textContent: names from the setup are never parsed as HTML.
 
-import { num, parseNum, tidy } from './util.js';
+import { RIR_CODES, num, parseNum, rirFigure, tidy } from './util.js';
 
 /** h('div.card', {onclick, 'data-x': 1}, child, 'text', [more]) */
 export function h(tag, attrs, ...children) {
@@ -183,4 +183,41 @@ export function stepper({ label, value, step, kind, small, onChange, name }) {
   el.setValue = nv => { v = nv; input.value = v === null || v === undefined ? '' : num(v); fit(); };
   el.setSmall = t => { smallEl.textContent = t; };
   return el;
+}
+
+/**
+ * The RIR stepper (v1.1.0): the stepper's look, buttons only (no number pad).
+ * Values F, 0, 1, 2, 3, 4, 5+; with allowNone, "–" (not recorded, null) comes before F.
+ * value null without allowNone shows "–" too, and + then starts at F.  Minus stops at the first
+ * value, plus at 5+.  guard(): when it returns true a tap does nothing (double-tap guard).
+ */
+export function rirStepper({ label, value, small, onChange, name, allowNone = false, guard = null }) {
+  const codes = allowNone ? [null, ...RIR_CODES] : RIR_CODES;
+  let i = codes.indexOf(value === undefined ? null : value);   // -1: not recorded, outside the range
+  const fig = h('output.val', { name, 'aria-label': label, 'aria-live': 'polite' });
+  const minus = h('button.pm', { type: 'button', 'aria-label': `${label} down`, 'data-step': 'minus', text: '−' });
+  const plus = h('button.pm', { type: 'button', 'aria-label': `${label} up`, 'data-step': 'plus', text: '+' });
+  const show = () => {
+    const code = i < 0 ? null : codes[i];
+    fig.textContent = rirFigure(code);
+    fig.dataset.len = String(fig.textContent.length);
+    fig.dataset.value = code === null ? '' : String(code);
+    minus.disabled = i <= 0;
+    plus.disabled = i >= codes.length - 1;
+  };
+  const move = d => {
+    if (guard && guard()) return;
+    const ni = Math.max(0, Math.min(codes.length - 1, i + d));
+    if (ni === i) return;
+    i = ni;
+    show();
+    onChange(codes[i]);
+  };
+  minus.addEventListener('click', () => move(-1));
+  plus.addEventListener('click', () => move(1));
+  show();
+  return h('div.step.rir', { 'data-kind': 'rir' },
+    h('label', { text: label }),
+    h('div.ctl', minus, fig, plus),
+    h('small', { text: small || '' }));
 }
