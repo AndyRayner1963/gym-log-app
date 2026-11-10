@@ -32,7 +32,9 @@ DEFAULT_REPO = "~/gym-log-data"
 SESSION_COLS = ["Session ID", "Date", "Start", "End", "Minutes", "Workout", "Comment", "Status", "Sets", "Revision"]
 SET_COLS = ["Session ID", "Date", "Workout", "Exercise Order", "Set", "Planned Exercise ID", "Planned Exercise",
             "Exercise ID", "Exercise", "Group", "Type", "Measure", "Weight (kg)", "Reps", "Duration (s)",
-            "Time Logged", "Swapped"]
+            "Time Logged", "Swapped", "RIR", "Failure"]
+HISTORY_FORMAT = 2            # 1 = original columns; 2 = adds RIR and Failure to the Sets sheet
+HISTORY_FORMAT_PROPERTY = "Swole history format"
 
 EX_COLS = ["ID", "Exercise", "Group", "Type", "Measure", "Increment (kg)", "Note", "Active"]
 WO_COLS = ["Workout", "Order", "Exercise", "Sets", "Target Min", "Target Max", "Comment"]
@@ -604,6 +606,14 @@ def validate_session(d):
             for k in ("weight_kg", "position", "set_number"):
                 if isinstance(s[k], bool) or not isinstance(s[k], (int, float)):
                     raise ValueError("set %d has a non-numeric '%s'" % (i, k))
+            # reps in reserve: optional, but 'rir' and 'failed' come together
+            if ("rir" in s) != ("failed" in s):
+                raise ValueError("set %d has only one of 'rir' and 'failed'" % i)
+            if "rir" in s:
+                if isinstance(s["rir"], bool) or not isinstance(s["rir"], int) or not 0 <= s["rir"] <= 5:
+                    raise ValueError("set %d has an invalid 'rir' (must be a whole number 0 to 5)" % i)
+                if not isinstance(s["failed"], bool):
+                    raise ValueError("set %d has an invalid 'failed' (must be true or false)" % i)
 
 
 def step_read_sessions(run, repo):
@@ -668,7 +678,8 @@ def history_rows(sessions):
             trows.append([d["session_id"], date, workout, s["position"], s["set_number"], planned or None,
                           s.get("planned_exercise_name") or None, s["exercise_id"], s["exercise_name"],
                           s["group"], s["type"], s["measure"], s["weight_kg"], s.get("reps"), s.get("duration_s"),
-                          local_naive(s["logged_at"]), swapped])
+                          local_naive(s["logged_at"]), swapped,
+                          s["rir"] if "rir" in s else None, "Y" if s.get("failed") is True else None])
     return srows, trows
 
 
@@ -738,13 +749,18 @@ def build_history_workbook(srows, trows, path):
     CEN = ("General", "center")
     style_history_sheet(
         ws2, SET_COLS, len(trows),
-        ["text", DATE, "text", INT, INT, "text", "text", "text", "text", "text", "text", "text", DEC, INT, INT, DTS, CEN],
-        [38, 12, 22, 10, 6, 12, 26, 11, 26, 10, 12, 10, 12, 8, 12, 19, 9])
+        ["text", DATE, "text", INT, INT, "text", "text", "text", "text", "text", "text", "text", DEC, INT, INT, DTS, CEN, CEN, CEN],
+        [38, 12, 22, 10, 6, 12, 26, 11, 26, 10, 12, 10, 12, 8, 12, 19, 9, 7, 9])
     wb.properties.creator = "gymsync"
     wb.properties.title = "Gym History"
     fixed = dt.datetime(2026, 1, 1)
     wb.properties.created = fixed
     wb.properties.modified = fixed
+    try:   # the history's column-contract version, carried invisibly as a custom document property
+        from openpyxl.packaging.custom import IntProperty
+        wb.custom_doc_props.append(IntProperty(name=HISTORY_FORMAT_PROPERTY, value=HISTORY_FORMAT))
+    except Exception:
+        pass
     wb.save(path)
     normalise_zip(path)
 
@@ -789,11 +805,26 @@ def read_old_revisions(path):
         return {}
 
 
+def old_history_is_format_1(path):
+    """True if the workbook about to be replaced is a readable one without the RIR and Failure columns."""
+    if not os.path.exists(path):
+        return False
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, read_only=True)
+        head = [h for h in next(wb["Sets"].iter_rows(values_only=True))]
+        wb.close()
+        return "RIR" not in head
+    except Exception:
+        return False
+
+
 def step_history(run, folder, sessions):
     path = os.path.join(folder, HISTORY_FILE)
     srows, trows = history_rows(sessions)
     run.total = len(srows)
-    old = read_old_revisions(path)
+    old = read_old_revisions(path)     # compares Sessions revisions only, so the new Sets columns cannot count as corrections
+    upgrading = old_history_is_format_1(path)
     run.new = sum(1 for r in srows if r[0] not in old)
     run.changed = sum(1 for r in srows if r[0] in old and old[r[0]] != r[9])
     lock = os.path.join(folder, "~$" + HISTORY_FILE)
@@ -816,6 +847,8 @@ def step_history(run, folder, sessions):
         if os.path.exists(tmp):
             os.remove(tmp)
     run.history_updated = True
+    if upgrading:
+        run.say("%s upgraded to history format %d (new RIR and Failure columns)." % (HISTORY_FILE, HISTORY_FORMAT))
     run.say("%s updated: %d sessions, %d sets." % (HISTORY_FILE, len(srows), len(trows)))
 
 
