@@ -55,6 +55,17 @@ const sh = (c, o = {}) => execSync(c, { encoding: 'utf8', env, stdio: ['ignore',
   sh(`cd ${D}/seed && git add -A && git -c user.name=phone -c user.email=p@x commit -qm phone && git -c user.name=phone -c user.email=p@x pull -q --rebase && git push -q origin HEAD 2>&1`);
   console.log('SYNC 2:', sh(`python3 ${APP}/mac/gymsync.py`).trim().split('\n').pop());
   console.log('SYNC 3:', sh(`python3 ${APP}/mac/gymsync.py`).trim().split('\n').pop());
+  // v1.1.1: the RIR moves to the extra set.  The carry's set 3 (the last planned set) has blank RIR and
+  // Failure in Gym History.xlsx; extra set 4 has RIR 3.
+  const py = `import sys, json, openpyxl
+ws = openpyxl.load_workbook(sys.argv[1], read_only=True)["Sets"]
+rows = list(ws.iter_rows(values_only=True)); h = list(rows[0]); c = h.index
+print(json.dumps([[r[c("Set")], r[c("RIR")], r[c("Failure")]] for r in rows[1:]
+  if r[c("Session ID")] == sys.argv[2] and r[c("Exercise Order")] == 2]))`;
+  const carry = JSON.parse(sh(`python3 -c '${py}' "${D}/folder/Gym History.xlsx" ${mine.session_id}`));
+  const want = [[1, null, null], [2, null, null], [3, null, null], [4, 3, null]];
+  console.log('CARRY RIR IN HISTORY (expect set 3 blank, set 4 RIR 3):', JSON.stringify(carry));
+  if (JSON.stringify(carry) !== JSON.stringify(want)) throw new Error(`carry RIR rows ${JSON.stringify(carry)}, expected ${JSON.stringify(want)}`);
   fs.writeFileSync(D + '/mine.json', JSON.stringify(mine));
   await app.close(); await H.closeEnv();
 })().catch(e => { console.error('FAILED', e); process.exit(1); });

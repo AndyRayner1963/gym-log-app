@@ -628,6 +628,8 @@ function dockEl() {
     // Done state (v1.0.1, RIR row v1.1.0): the exercise stays current after its last planned set.
     // Next takes the Log button's place.  Where the weight and reps steppers were: the RIR of the
     // last set (left) and + Extra set (right).  All of them ignore taps for a second after a log.
+    // The RIR lives on the last set only: logging an extra set moves it there (v1.1.1, see
+    // M.withLoggedSet); the + Extra set tap itself changes no RIR.
     const n = M.slotSets(rec.doc, slot.position).length;
     const ps = M.slotBase(slot);
     const status = n > ps ? `${n} sets done (${ps} planned)` : `${n} of ${ps} sets done`;

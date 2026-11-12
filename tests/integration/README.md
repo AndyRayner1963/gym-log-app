@@ -6,5 +6,6 @@ Runs the Mac sync script and the phone app together against a local stand-in for
 2. `gymsync` publishes the fixture setup workbook.
 3. The app (Chromium, 430 × 932) fetches that setup, restores the history, logs a workout including an extra set, and uploads it.
 4. `gymsync` runs twice more: the new session must appear row for row in `Gym History.xlsx`, and the second run must change nothing.
+5. RIR (v1.1.1): the done-state RIR moves to the extra set, so in `Gym History.xlsx` the carry's set 3 has blank RIR and Failure and its extra set 4 has RIR 3.
 
 Run from the repository root: `node tests/integration/integration.js`.  It prints one line per check; `FAILED` means a check failed.  Needs `python3` with openpyxl, `git`, Node and Playwright.

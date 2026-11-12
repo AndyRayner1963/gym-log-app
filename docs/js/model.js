@@ -10,9 +10,10 @@
 //   everSent   true once an upload of this session has been attempted
 //   snapshot   the setup the session started with (groups, exercises, workout)
 //   slots      one per exercise slot: position, planned exercise and plan, actual exercise
-//   ui         current slot, entry draft, stopwatch start
+//   ui         current slot, entry draft, stopwatch start, and rirMoved: {set_id: RIR code} for
+//              RIR moved off a set by an extra set (v1.1.1).  Kept on the phone only, never in the doc.
 
-import { APP_VERSION, FORMAT, RIR_DEFAULT, applyRir, clone, isoLocal, localDate, ms, now, tidy, uuid } from './util.js';
+import { APP_VERSION, FORMAT, RIR_DEFAULT, applyRir, clone, rirCode, isoLocal, localDate, ms, now, tidy, uuid } from './util.js';
 
 export const AUTO_CLOSE_MS = 2 * 60 * 60 * 1000;
 
@@ -172,6 +173,19 @@ export function withLoggedSet(rec, pos, weight, value) {
   });
   if (ex.measure === 'time') set.duration_s = Math.round(value); else set.reps = Math.round(value);
   set.logged_at = isoLocal();
+  // An exercise's done-state RIR lives on its final set only (v1.1.1).  A set logged after all the
+  // planned sets (an extra set) takes it over: the previous last set loses rir/failed, changed or
+  // left on the default, in this same write.  The value is remembered on the phone (ui.rirMoved) so
+  // removing the extra set again in this session can put it back (see withDeletedSet).
+  const before = slotSets(r.doc, pos);
+  const prev = before.length >= slotBase(slot) ? before[before.length - 1] : null;
+  if (prev) {
+    const code = rirCode(prev);
+    if (code !== null) {
+      applyRir(prev, null);
+      r.ui.rirMoved = { ...(r.ui.rirMoved || {}), [prev.set_id]: code };
+    }
+  }
   r.doc.sets.push(set);
   // A set that completes the slot (its last planned set, or an extra one) is the one the RIR
   // control applies to: it starts at the default, in this same write (v1.1.0).
@@ -232,6 +246,19 @@ export function withDeletedSet(rec, setId) {
   const pos = r.doc.sets[i].position;
   r.doc.sets.splice(i, 1);
   renumber(r.doc, pos);
+  // Undo safety for the RIR move (v1.1.1), open session only: when removing an extra set leaves the
+  // set it took the RIR from as the slot's last set again, with no RIR, put the remembered value
+  // back.  With nothing remembered (e.g. a closed session) the set stays unrecorded.
+  const moved = r.doc.status === 'open' && r.ui && r.ui.rirMoved ? { ...r.ui.rirMoved } : null;
+  if (moved) {
+    delete moved[setId];
+    const last = slotLastSet(r.doc, pos);
+    if (last && rirCode(last) === null && moved[last.set_id] !== undefined) {
+      applyRir(last, moved[last.set_id]);
+      delete moved[last.set_id];
+    }
+    r.ui.rirMoved = moved;
+  }
   // An extra set that was asked for but not logged goes with the deleted set, so deleting
   // the last planned set brings back the steppers for that set rather than a phantom extra.
   const slot = r.slots ? r.slots.find(x => x.position === pos) : null;
