@@ -1,7 +1,7 @@
 {
   "format": 1,
   "published_at": "2026-11-02T08:15:00+07:00",
-  "hash": "b178474071a5b4d8a344959ea46ba5ef70a8f063a3358b4828f8c33a51078519",
+  "hash": "00fd32ed7fcf4b1d10d7fff8b7a1defe8a0bf3172497fe5334a5d9c00d25d0a9",
   "groups": [
     "Push",
     "Pull",
@@ -27,7 +27,9 @@
       "measure": "reps",
       "increment_kg": 2.5,
       "note": "",
-      "active": true
+      "active": true,
+      "target_min": 8,
+      "target_max": 12
     },
     {
       "id": "A03",
@@ -37,7 +39,9 @@
       "measure": "reps",
       "increment_kg": 2,
       "note": "Neutral grip",
-      "active": true
+      "active": true,
+      "target_min": 10,
+      "target_max": 15
     },
     {
       "id": "B01",
@@ -77,7 +81,8 @@
       "measure": "reps",
       "increment_kg": 1.25,
       "note": "Plates only",
-      "active": true
+      "active": true,
+      "target_min": 6
     },
     {
       "id": "B05",
@@ -107,7 +112,9 @@
       "measure": "time",
       "increment_kg": 2,
       "note": "",
-      "active": true
+      "active": true,
+      "target_min": 60,
+      "target_max": 75
     },
     {
       "id": "D01",

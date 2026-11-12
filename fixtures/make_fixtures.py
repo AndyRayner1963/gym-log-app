@@ -29,7 +29,14 @@ WORKOUTS = [
                  (3, 'B03', 3, 6, 10, ''), (4, 'D01', 3, 45, 60, '')]),
  ('Test Lower', [(1, 'C01', 3, 10, 15, ''), (2, 'C02', 3, 60, 75, 'Move up at 75 s'), (3, 'D02', 2, 15, 20, '')]),
 ]
+# Exercise default targets (v1.2.0): optional Target Min / Target Max on the Exercises sheet, used
+# where no workout target applies (free-form and added exercises).  Absent from setup.json when blank.
+EX_TARGETS = {'A02': (8, 12), 'A03': (10, 15), 'B04': (6, None), 'C02': (60, 75)}
 exercises = [dict(id=i, name=n, group=g, type=t, measure=m, increment_kg=inc, note=note, active=a) for i, n, g, t, m, inc, note, a in EX]
+for e in exercises:
+    lo, hi = EX_TARGETS.get(e['id'], (None, None))
+    if lo is not None: e['target_min'] = lo
+    if hi is not None: e['target_max'] = hi
 workouts = [dict(name=w, items=[dict(order=o, exercise_id=e, sets=s, target_min=lo, target_max=hi, comment=c) for o, e, s, lo, hi, c in items]) for w, items in WORKOUTS]
 content = dict(groups=GROUPS, exercises=exercises, workouts=workouts)
 canon = json.dumps(content, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
@@ -106,8 +113,8 @@ session('s7', '2026-11-10T16:42:00', 'Test Upper', 'open', [
 
 # sample setup workbook matching setup.json (plain, unstyled: it is a test input)
 wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Exercises'
-ws.append(['ID', 'Exercise', 'Group', 'Type', 'Measure', 'Increment (kg)', 'Note', 'Active'])
-for e in exercises: ws.append([e['id'], e['name'], e['group'], e['type'], e['measure'].capitalize(), e['increment_kg'], e['note'] or None, 'Y' if e['active'] else 'N'])
+ws.append(['ID', 'Exercise', 'Group', 'Type', 'Measure', 'Increment (kg)', 'Note', 'Active', 'Target Min', 'Target Max'])
+for e in exercises: ws.append([e['id'], e['name'], e['group'], e['type'], e['measure'].capitalize(), e['increment_kg'], e['note'] or None, 'Y' if e['active'] else 'N', e.get('target_min'), e.get('target_max')])
 ws = wb.create_sheet('Workouts'); ws.append(['Workout', 'Order', 'Exercise', 'Sets', 'Target Min', 'Target Max', 'Comment'])
 for w in workouts:
     for it in w['items']: ws.append([w['name'], it['order'], BYID[it['exercise_id']]['name'], it['sets'], it['target_min'], it['target_max'], it['comment'] or None])
