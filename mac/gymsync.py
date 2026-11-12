@@ -37,6 +37,7 @@ HISTORY_FORMAT = 2            # 1 = original columns; 2 = adds RIR and Failure t
 HISTORY_FORMAT_PROPERTY = "Swole history format"
 
 EX_COLS = ["ID", "Exercise", "Group", "Type", "Measure", "Increment (kg)", "Note", "Active"]
+EX_OPTIONAL_COLS = ["Target Min", "Target Max"]     # optional: default targets; absent columns read as blank
 WO_COLS = ["Workout", "Order", "Exercise", "Sets", "Target Min", "Target Max", "Comment"]
 LIST_COLS = ["Types", "Measures", "Groups"]
 
@@ -278,8 +279,9 @@ def find_table(ws, required):
     return best[1], best[2], [c for c in required if norm_header(c) not in best[2]]
 
 
-def read_rows(ws, required):
-    """Returns (rows, missing); rows = [(excel_row_number, {header: raw value})] with blank rows dropped."""
+def read_rows(ws, required, optional=()):
+    """Returns (rows, missing); rows = [(excel_row_number, {header: raw value})] with blank rows dropped.
+    Optional columns are read when present (any position) and are None when the workbook lacks them."""
     hr, cols, missing = find_table(ws, required)
     if missing:
         return [], missing
@@ -288,6 +290,9 @@ def read_rows(ws, required):
         rec = {}
         for name in required:
             rec[name] = ws.cell(row=r, column=cols[norm_header(name)]).value
+        for name in optional:
+            col = cols.get(norm_header(name))
+            rec[name] = ws.cell(row=r, column=col).value if col else None
         if all(text(v) == "" for v in rec.values()):
             continue
         rows.append((r, rec))
@@ -309,6 +314,23 @@ def read_list_column(ws, name):
 def compute_hash(content):
     canon = json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def read_targets(rec, where, faults):
+    """Optional Target Min / Target Max of a row -> {"target_min": n, "target_max": n} (only non-blank ones).
+    Faults are appended to the list."""
+    targets = {}
+    for col, key in (("Target Min", "target_min"), ("Target Max", "target_max")):
+        if text(rec[col]) == "":
+            continue
+        n = number(rec[col])
+        if n is None or n != int(n) or n < 0:
+            faults.append(where + "%s must be a whole number (found '%s')." % (col, text(rec[col])))
+        else:
+            targets[key] = int(n)
+    if "target_min" in targets and "target_max" in targets and targets["target_min"] > targets["target_max"]:
+        faults.append(where + "Target Min (%d) is greater than Target Max (%d)." % (targets["target_min"], targets["target_max"]))
+    return targets
 
 
 def check_setup(path, old_exercises):
@@ -352,7 +374,7 @@ def check_setup(path, old_exercises):
     exercises = []
     lookup_ok = "Exercises" in sheets
     if "Exercises" in sheets:
-        rows, missing = read_rows(sheets["Exercises"], EX_COLS)
+        rows, missing = read_rows(sheets["Exercises"], EX_COLS, EX_OPTIONAL_COLS)
         if missing:
             lookup_ok = False
         for m in missing:
@@ -398,10 +420,12 @@ def check_setup(path, old_exercises):
             act = text(rec["Active"]).upper()
             if act not in ("Y", "N"):
                 faults.append(where + "Active must be Y or N (found '%s')." % text(rec["Active"]))
+            targets = read_targets(rec, where, faults)
             if len(faults) == before:
                 exercises.append({"id": ex_id, "name": name, "group": vals["Group"], "type": vals["Type"],
                                   "measure": vals["Measure"], "increment_kg": inc, "note": text(rec["Note"]),
                                   "active": act == "Y"})
+                exercises[-1].update(targets)
             elif raw_id and name:
                 # still usable for the Workouts checks
                 exercises.append({"id": ex_id, "name": name, "active": (act == "Y") if act in ("Y", "N") else None,
@@ -452,17 +476,7 @@ def check_setup(path, old_exercises):
             if sets is None or sets != int(sets) or sets < 1:
                 faults.append(where + "Sets must be a whole number of 1 or more (found '%s')." % text(rec["Sets"]))
                 sets = None
-            targets = {}
-            for col, key2 in (("Target Min", "target_min"), ("Target Max", "target_max")):
-                if text(rec[col]) == "":
-                    continue
-                n = number(rec[col])
-                if n is None or n != int(n) or n < 0:
-                    faults.append(where + "%s must be a whole number (found '%s')." % (col, text(rec[col])))
-                else:
-                    targets[key2] = int(n)
-            if "target_min" in targets and "target_max" in targets and targets["target_min"] > targets["target_max"]:
-                faults.append(where + "Target Min (%d) is greater than Target Max (%d)." % (targets["target_min"], targets["target_max"]))
+            targets = read_targets(rec, where, faults)
             if ex is not None and order is not None and sets is not None:
                 item = {"order": int(order), "exercise_id": ex["id"], "sets": int(sets)}
                 item.update(targets)

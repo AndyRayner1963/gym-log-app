@@ -33,6 +33,8 @@ EXERCISES = [  # header, width, help text
     ("Increment (kg)", 13, "Step for the weight buttons.  Greater than zero, such as 2.5."),
     ("Note", 42, "Instruction note shown with the exercise.  May be blank."),
     ("Active", 9, "Y or N.  N hides the exercise on the phone; its history stays."),
+    ("Target Min", 11, "Default target, in reps (seconds if Measure is Time), used where a workout sets no target.  May be blank."),
+    ("Target Max", 11, "Default target, in reps (seconds if Measure is Time), used where a workout sets no target.  May be blank.  Not below Target Min."),
 ]
 WORKOUTS = [
     ("Workout", 24, "Workout name.  Repeat it on each row of the workout."),
@@ -128,12 +130,14 @@ def build(path=DEFAULT_OUT):
 
     # Exercises
     style_header(ws_ex, EXERCISES)
-    style_body(ws_ex, len(EXERCISES), LAST, numeric_cols=(6,))
+    style_body(ws_ex, len(EXERCISES), LAST, numeric_cols=(6, 9, 10))
     add_list_validation(ws_ex, "C", "GroupList", "Group", "")
     add_list_validation(ws_ex, "D", "TypeList", "Type", "")
     add_list_validation(ws_ex, "E", "MeasureList", "Measure", "")
     add_list_validation(ws_ex, "H", '"Y,N"', "Active", "")
     add_number_validation(ws_ex, "F", "decimal", "greaterThan", "0", "Increment", "Enter a number greater than zero, such as 2.5.")
+    add_number_validation(ws_ex, "I", "whole", "greaterThanOrEqual", "0", "Target", "Enter a whole number.")
+    add_number_validation(ws_ex, "J", "whole", "greaterThanOrEqual", "0", "Target", "Enter a whole number.")
 
     # Workouts
     style_header(ws_wo, WORKOUTS)

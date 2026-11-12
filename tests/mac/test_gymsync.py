@@ -135,6 +135,11 @@ FAULT_CASES = [
     ("rule7-sets-fraction", set_cell("Workouts", "D3", 2.5), ["Workouts row 3", "Sets must be"]),
     ("rule8-target-fraction", set_cell("Workouts", "E4", 8.5), ["Workouts row 4", "Target Min must be a whole number"]),
     ("rule8-target-text", set_cell("Workouts", "F4", "lots"), ["Workouts row 4", "Target Max must be a whole number"]),
+    ("ex-target-min-fraction", set_cell("Exercises", "I3", 8.5), ["Exercises row 3", "Target Min must be a whole number (found '8.5')."]),
+    ("ex-target-max-text", set_cell("Exercises", "J3", "lots"), ["Exercises row 3", "Target Max must be a whole number (found 'lots')."]),
+    ("ex-target-negative", set_cell("Exercises", "I3", -1), ["Exercises row 3", "Target Min must be a whole number"]),
+    ("ex-target-min-above-max", two(set_cell("Exercises", "I3", 20), set_cell("Exercises", "J3", 10)),
+     ["Exercises row 3", "Target Min (20) is greater than Target Max (10)."]),
     ("rule8-min-above-max", two(set_cell("Workouts", "E4", 20), set_cell("Workouts", "F4", 10)), ["Workouts row 4", "greater than Target Max"]),
 ]
 
@@ -168,11 +173,11 @@ def test_columns_in_any_order_case_insensitive_blank_rows_and_trimming(env):
         ws = wb["Exercises"]
         rows = [[c.value for c in r] for r in ws.iter_rows()]
         ws.delete_rows(1, ws.max_row)
-        order = [7, 6, 5, 4, 3, 2, 1, 0]                       # reverse column order
+        order = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]                       # reverse column order
         hdr = [rows[0][i] for i in order]
         hdr = [h.upper() if h != "Exercise" else "  exercise " for h in hdr]
         ws.append(hdr)
-        ws.append([None] * 8)                                  # blank row
+        ws.append([None] * 10)                                 # blank row
         for r in rows[1:]:
             vals = [r[i] for i in order]
             vals = [("  %s " % v if isinstance(v, str) else v) for v in vals]
@@ -183,6 +188,93 @@ def test_columns_in_any_order_case_insensitive_blank_rows_and_trimming(env):
     assert p.returncode == 0, p.stdout
     got = json.loads(open(os.path.join(env.data, "setup.json"), encoding="utf-8").read())
     assert got["hash"] == FIX_SETUP["hash"]
+
+
+def published_exercises(env):
+    return dict((e["id"], e) for e in json.loads(env.origin_file("setup.json"))["exercises"])
+
+
+def test_exercise_targets_published_when_present(env):
+    assert env.run().returncode == 0
+    ex = published_exercises(env)
+    assert (ex["A02"]["target_min"], ex["A02"]["target_max"]) == (8, 12)          # both
+    assert ex["B04"]["target_min"] == 6 and "target_max" not in ex["B04"]         # min only
+    assert (ex["C02"]["target_min"], ex["C02"]["target_max"]) == (60, 75)         # Time measure
+    assert "target_min" not in ex["A01"] and "target_max" not in ex["A01"]        # blank -> absent
+    assert list(ex["A02"]) == ["id", "name", "group", "type", "measure", "increment_kg", "note", "active",
+                               "target_min", "target_max"]
+    assert not re.search(r'"target_m\w+": \d+\.0', open(os.path.join(env.data, "setup.json")).read())
+
+
+def test_exercise_max_only_target(env):
+    edit_setup(env, two(set_cell("Exercises", "I3", None), set_cell("Exercises", "J3", 12)))
+    assert env.run().returncode == 0
+    a02 = published_exercises(env)["A02"]
+    assert a02["target_max"] == 12 and "target_min" not in a02
+
+
+def drop_target_columns(wb):
+    wb["Exercises"].delete_cols(9, 2)
+
+
+def test_workbook_without_target_columns_publishes_without_fault_or_warning(env):
+    def fn(wb):
+        drop_target_columns(wb)
+    edit_setup(env, fn)
+    p = env.run()
+    assert p.returncode == 0, p.stdout
+    assert "Warning" not in p.stdout and "fault" not in p.stdout.lower()
+    ex = published_exercises(env)
+    assert all("target_min" not in e and "target_max" not in e for e in ex.values())
+
+
+def test_blank_target_columns_give_same_hash_as_no_target_columns(env, tmp_path):
+    def blank(wb):
+        ws = wb["Exercises"]
+        for r in range(2, ws.max_row + 1):
+            ws.cell(row=r, column=9).value = None
+            ws.cell(row=r, column=10).value = None
+    edit_setup(env, blank)
+    assert env.run().returncode == 0
+    h_blank = json.loads(env.origin_file("setup.json"))["hash"]
+    edit_setup(env, drop_target_columns)
+    # force a fresh publish by re-running against an empty published state
+    os.remove(os.path.join(env.data, "setup.json"))
+    git(env.data, "commit", "-qam", "drop")
+    git(env.data, "push", "-q")
+    assert env.run().returncode == 0
+    h_none = json.loads(env.origin_file("setup.json"))["hash"]
+    assert h_blank == h_none != FIX_SETUP["hash"]
+
+
+def test_target_columns_found_by_name_in_any_position(env):
+    def fn(wb):
+        ws = wb["Exercises"]
+        rows = [[c.value for c in r] for r in ws.iter_rows()]
+        ws.delete_rows(1, ws.max_row)
+        for r in rows:
+            ws.append(r[8:10] + r[0:8])        # targets first
+    edit_setup(env, fn)
+    assert env.run().returncode == 0
+    assert json.loads(env.origin_file("setup.json"))["hash"] == FIX_SETUP["hash"]
+
+
+def test_changing_an_exercise_target_republishes(env_seeded):
+    edit_setup(env_seeded, set_cell("Exercises", "J3", 14))
+    before = env_seeded.origin_head()
+    p = env_seeded.run()
+    assert p.returncode == 0, p.stdout
+    assert env_seeded.origin_head() != before and "setup published" in p.summary
+    got = json.loads(env_seeded.origin_file("setup.json"))
+    assert got["hash"] != FIX_SETUP["hash"]
+    assert [e for e in got["exercises"] if e["id"] == "A02"][0]["target_max"] == 14
+
+
+def test_adding_a_target_republishes(env_seeded):
+    edit_setup(env_seeded, set_cell("Exercises", "I2", 5))
+    p = env_seeded.run()
+    assert p.returncode == 0 and "setup published" in p.summary
+    assert published_exercises(env_seeded)["A01"]["target_min"] == 5
 
 
 def test_rule9_removed_exercise_is_a_warning_and_does_not_block(env_seeded):
@@ -682,7 +774,8 @@ def test_empty_setup_workbook_template(tmp_path):
     for path in (out, committed):
         wb = openpyxl.load_workbook(path)
         assert wb.sheetnames == ["Exercises", "Workouts", "Lists"]
-        assert [c.value for c in wb["Exercises"][1]] == ["ID", "Exercise", "Group", "Type", "Measure", "Increment (kg)", "Note", "Active"]
+        assert [c.value for c in wb["Exercises"][1]] == ["ID", "Exercise", "Group", "Type", "Measure", "Increment (kg)", "Note", "Active",
+                                                           "Target Min", "Target Max"]
         assert [c.value for c in wb["Workouts"][1]] == ["Workout", "Order", "Exercise", "Sets", "Target Min", "Target Max", "Comment"]
         # no exercises, no workouts
         assert all(c.value is None for r in wb["Exercises"].iter_rows(min_row=2) for c in r)
@@ -695,6 +788,9 @@ def test_empty_setup_workbook_template(tmp_path):
         dv = dict((str(d.sqref), d.formula1) for d in wb["Exercises"].data_validations.dataValidation)
         assert dv["C2:C500"] == "GroupList" and dv["D2:D500"] == "TypeList"
         assert dv["E2:E500"] == "MeasureList" and dv["H2:H500"] == '"Y,N"'
+        assert dv["I2:I500"] == "0" and dv["J2:J500"] == "0"
+        types = dict((str(d.sqref), d.type) for d in wb["Exercises"].data_validations.dataValidation)
+        assert types["I2:I500"] == "whole" and types["J2:J500"] == "whole"
         dvw = dict((str(d.sqref), d.formula1) for d in wb["Workouts"].data_validations.dataValidation)
         assert dvw["C2:C500"] == "ExerciseList"
         assert set(wb.defined_names) >= {"GroupList", "TypeList", "MeasureList", "ExerciseList"}
