@@ -123,6 +123,41 @@ const OUT = path.join(__dirname, 'screenshots');
   await shot('09-settings', { clearToast: true });
   await page.evaluate(() => document.querySelector('#app .main').scrollTo(0, 99999));
   await shot('09b-settings-lower');
+  // v1.2.0: the step-up indicator's switch.
+  await page.evaluate(() => document.querySelector('[data-group=workout]').scrollIntoView({ block: 'center' }));
+  await shot('09c-settings-step-up');
+
+  // v1.2.0: step-up cue and the done state's line against last time.  Test Barbell Row (B04): last
+  // time (8 Nov) ends 22.5 × 10, e1RM 30.0, which predicts 7.9 reps at 23.75 against its default 6+.
+  await page.click('[data-action=back]');
+  await page.waitForSelector('#app[data-view=home]');
+  await page.click('[data-workout=""]');
+  await page.waitForSelector('[data-sheet=add] [data-group]');
+  await page.click('[data-sheet=add] [data-group=Push]');
+  await page.click('[data-sheet=add] [data-ex=A01]');
+  await page.click('[data-action=add-exercise]');
+  await page.click('[data-sheet=add] [data-group=Pull]');
+  await page.click('[data-sheet=add] [data-ex=B04]');
+  await page.waitForSelector('.dock [data-kind=weight][data-cue=up]');
+  await shot('10-step-up-cue');
+  await page.click('[data-action=exercises]');
+  await page.waitForSelector('[data-sheet=exercises] [data-up]');
+  await shot('10b-exercises-panel-step-up');
+  await page.click('[data-sheet=exercises] [data-action=cancel]');
+  // 21.25 × 10 three times: RIR 3 gives 30.5, 102 % (muted).
+  for (let i = 0; i < 3; i++) await H.logSet(page, { advance: 150000 });
+  await page.waitForSelector('[data-dock=complete] [data-perf]');
+  await shot('11a-done-perf-same');
+  const rirTap = async (step, times) => {
+    await page.clock.fastForward(1100);
+    for (let i = 0; i < times; i++) await page.click(`.dock [data-kind=rir] [data-step=${step}]`);
+  };
+  await rirTap('plus', 2);   // 5+: 31.9, 106 % (violet)
+  await page.waitForSelector('.dock [data-perf][data-band=up]');
+  await shot('11b-done-perf-up');
+  await rirTap('minus', 6);  // F: 28.3, 94 % (amber)
+  await page.waitForSelector('.dock [data-perf][data-band=down]');
+  await shot('11c-done-perf-down');
 
   if (app.errors.length) console.log('page errors:', app.errors);
   await app.close();

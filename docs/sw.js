@@ -17,6 +17,7 @@ const FILES = [
   'js/db.js',
   'js/github.js',
   'js/model.js',
+  'js/progress.js',
   'js/sync.js',
   'js/ui.js',
   'js/util.js',

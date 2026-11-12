@@ -3,6 +3,9 @@
   --bg: #0F1113; --card: #191C20; --card2: #22262B; --line: #2C3138;
   --text: #F3F5F6; --muted: #9BA4AE; --faint: #6B747E;
   --go: #C6F24E; --go-ink: #141a00; --warn: #F5B84A; --bad: #FF6B5E; --ok: #7BD88F; --sheet: #1D2126;
+  /* v1.2.0: "up" (step-up cue, at or above last time).  Contrast 7.77 on --bg, 7.02 on --card,
+     6.64 on --sheet, 6.25 on --card2 (WCAG 2 ratio). */
+  --up: #B494FF;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
   --st: env(safe-area-inset-top, 0px); --sb: env(safe-area-inset-bottom, 0px);
   --sl: env(safe-area-inset-left, 0px); --sr: env(safe-area-inset-right, 0px);
@@ -264,3 +267,26 @@ textarea.field { resize: none; line-height: 1.4; }
 .log.nextbtn .lbl { font-weight: 500; opacity: .75; flex: none; margin-left: 0; }
 .log.nextbtn .nm { margin-left: 6px; opacity: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log.nextbtn i { font-style: normal; flex: none; margin-left: 6px; }
+
+/* ---- v1.2.0: step-up indicator and performance against last time ---- */
+/* Step-up cue: colour, not words.  The weight figure turns violet and a small ▲ sits in the top
+   right corner of the weight stepper's + button while the weight is below last time's + one step. */
+.pm { position: relative; }
+.upmark { display: none; position: absolute; top: 5px; right: 6px; font-size: 11px; line-height: 1; color: var(--up); pointer-events: none; }
+.step.cue .upmark { display: block; }
+.step.cue .val { color: var(--up); }
+/* The same ▲ beside a name in the Exercises panel (slot not started yet). */
+.upname { color: var(--up); font-size: 12px; margin-left: 6px; }
+/* Done state: "e1RM 56.0 · 95% of last time", muted, violet at 103 % or more, amber at 97 % or less. */
+.perf { margin-top: 3px; font-size: 14px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.perf[data-band=up] { color: var(--up); }
+.perf[data-band=down] { color: var(--warn); }
+/* Settings: an on/off switch in a 64 × 44 button. */
+.switchrow { display: flex; align-items: center; gap: 12px; }
+.switchrow .txt { flex: 1; min-width: 0; font-size: 14px; color: var(--muted); line-height: 1.45; }
+.switchrow .txt b { display: block; color: var(--text); font-size: 15px; font-weight: 600; }
+.switch { flex: none; position: relative; width: 64px; height: 44px; min-height: 44px; background: none; border: 0; padding: 0; }
+.switch::before { content: ""; position: absolute; left: 6px; top: 6.5px; width: 52px; height: 31px; border-radius: 16px; background: var(--card2); box-shadow: inset 0 0 0 1.5px var(--line); transition: background .15s; }
+.switch .knob { position: absolute; left: 8px; top: 8.5px; width: 27px; height: 27px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+.switch[aria-checked=true]::before { background: var(--go); box-shadow: none; }
+.switch[aria-checked=true] .knob { transform: translateX(21px); background: var(--go-ink); }

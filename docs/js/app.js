@@ -1,13 +1,14 @@
 // Swole: screens and wiring.  See BRIEF.md section 5.
 import * as db from './db.js';
 import * as M from './model.js';
+import * as P from './progress.js';
 import * as sync from './sync.js';
 import { closeDialogs, closeSheet, confirmBox, h, messageBox, openSheet, rirStepper, stepper, toast } from './ui.js';
 import * as U from './util.js';
 
 const state = {
   view: 'home',            // home | workout | history | session | settings
-  settings: { token: '', owner: '', repo: '' },
+  settings: { token: '', owner: '', repo: '', stepUp: true },
   setup: null,
   meta: {},
   setupCheckedAt: null,
@@ -35,6 +36,27 @@ function fromSets(rec, id) {
   return s ? { id, name: s.exercise_name, group: s.group, type: s.type, measure: s.measure, increment_kg: 1, note: '', active: true } : null;
 }
 const valueOf = U.valueOf;
+
+// ---- v1.2.0: targets, step-up indicator, performance against last time (see progress.js) ----
+
+/** The step-up indicator's switch in Settings (on unless switched off). */
+const stepUpOn = () => state.settings.stepUp !== false;
+
+/** Baseline: the last set of this exercise in the last closed session in which it was done. */
+function baselineOf(exId) {
+  const lt = M.lastTime(history(), exId);
+  return lt ? lt.sets[lt.sets.length - 1] : null;
+}
+
+/** Effective target of a slot, from its actual (possibly swapped) exercise: {min, max}. */
+const targetOf = (slot, ex) => P.effectiveTarget(slot, ex);
+
+/** The step-up signal of a slot ({on, next}); always off while the Settings switch is off. */
+function slotSignal(rec, slot) {
+  const ex = exOf(rec, slot.exercise_id);
+  if (!stepUpOn() || !ex) return { on: false, next: null };
+  return P.stepUp(ex, baselineOf(ex.id), targetOf(slot, ex));
+}
 
 // ======================================================================
 // Start-up
@@ -83,6 +105,7 @@ async function loadAll() {
   if (s.owner === undefined) { s.owner = defaultOwner(); changed = true; }
   if (s.repo === undefined) { s.repo = 'gym-log-data'; changed = true; }
   if (s.token === undefined) { s.token = ''; changed = true; }
+  if (s.stepUp === undefined) { s.stepUp = true; changed = true; }   // v1.2.0: on by default
   if (changed) await db.kvPut('settings', s);
   state.settings = s;
   state.setup = (await db.kvGet('setup')) || null;
@@ -461,10 +484,16 @@ function elapsedText(doc) {
   return `Started ${U.hhmm(doc.started_at)} · ${min} min`;
 }
 
+/**
+ * "3 sets × 10–12 reps" (long) or "3 × 10–12 reps"; for an unplanned slot "added · 10–15 reps",
+ * "10–15 reps" (free-form) or "".  The target is the effective one (v1.2.0): the workout's where it
+ * has one, else the exercise's default, so free-form and added exercises show a target too.
+ */
 function planText(slot, ex, long) {
   const p = M.slotPlanned(slot);
-  if (p === null) return state.open && state.open.doc.workout_name ? 'added' : '';
-  const t = U.targetText(ex.measure, slot.target_min, slot.target_max);
+  const tg = targetOf(slot, ex);
+  const t = U.targetText(ex.measure, tg.min, tg.max);
+  if (p === null) return [state.open && state.open.doc.workout_name ? 'added' : '', t].filter(Boolean).join(' · ');
   return `${long ? U.plural(p, 'set', 'sets') : p}${t ? ` × ${t}` : ''}`;
 }
 
@@ -511,10 +540,13 @@ function openExercises() {
       const done = M.slotComplete(rec, slot);
       const cur = slot.position === rec.ui.current;
       const meta = [progressText(rec, slot), planText(slot, ex, false)].filter(Boolean).join(' · ');
+      // Step-up indicator (v1.2.0): a violet ▲ by the name of a slot not started today.
+      const up = !M.slotSets(rec.doc, slot.position).length && slotSignal(rec, slot).on
+        ? h('span.upname', { 'data-up': '', 'aria-hidden': 'true' }, '▲') : null;
       return h(`button.opt.slot-opt${cur ? '.current' : ''}`, { type: 'button', 'data-slot': String(slot.position), 'aria-current': cur ? 'true' : null,
         onclick: async () => { await makeCurrent(slot.position); closeSheet(); } },
         h(`div.num${done ? '.done' : cur ? '.now' : ''}`, done ? '✓' : String(slot.position)),
-        h('div.info', h('div.name', ex.name, cur ? h('span.tag.now', 'now') : null), h('div.hist', meta)));
+        h('div.info', h('div.name', ex.name, up, cur ? h('span.tag.now', 'now') : null), h('div.hist', meta)));
     }),
     h('button.cancel', { type: 'button', 'data-action': 'cancel', onclick: closeSheet }, 'Cancel'),
   ]);
@@ -585,6 +617,26 @@ function rirEl(s) {
   return t ? h('span.rir', { 'data-rir': t }, ` · ${t}`) : null;
 }
 
+/**
+ * The done state's performance line (v1.2.0) for the slot's last set: its e1RM with the RIR on the
+ * stepper, as a percentage of the baseline's.  The baseline is that set's own exercise's (so a swap
+ * compares like with like).  null when the set is not e1RM-eligible or there is no baseline.
+ * el.show(code) redraws it for another RIR code.
+ */
+function perfLine(last) {
+  const base = baselineOf(last.exercise_id);
+  if (!P.performance(last, U.rirCode(last), base)) return null;
+  const el = h('p.perf', { 'data-perf': '' });
+  el.show = code => {
+    const p = P.performance(last, code, base);
+    el.textContent = P.performanceText(p);
+    el.dataset.band = p.band;
+    el.dataset.pct = String(p.pct);
+  };
+  el.show(U.rirCode(last));
+  return el;
+}
+
 function tankText(measure) { return measure === 'time' ? 'time left in the tank' : 'reps left in the tank'; }
 
 function entryText(ex, e) {
@@ -635,9 +687,12 @@ function dockEl() {
     const status = n > ps ? `${n} sets done (${ps} planned)` : `${n} of ${ps} sets done`;
     const next = M.nextOpenSlot(rec, slot.position);
     const last = M.slotLastSet(rec.doc, slot.position);
+    // v1.2.0: "e1RM 56.0 · 95% of last time" for the set the RIR stepper applies to; it follows the
+    // stepper at once (before the tap is stored).  None without a baseline or for other exercises.
+    const perf = perfLine(last);
     const rir = rirStepper({
       label: `RIR · Set ${last.set_number}`, value: U.rirCode(last), name: 'rir', small: tankText(last.measure),
-      guard: guarded, onChange: code => changeRir(last.set_id, code),
+      guard: guarded, onChange: code => { if (perf) perf.show(code); changeRir(last.set_id, code); },
     });
     const extra = h('button.btn.secondary.extracard', { type: 'button', 'data-action': 'extra-set', onclick: () => addExtraSet(slot.position) }, '+ Extra set');
     const row = h('div.steps.donerow', rir, extra);
@@ -645,6 +700,7 @@ function dockEl() {
       const nex = exOf(rec, next.exercise_id);
       return h('section.dock', { 'data-dock': 'complete' },
         h('p.donestate', { 'data-done': 'next' }, `${status} · ${ex.name}`),
+        perf,
         row,
         h('button.log.nextbtn', { type: 'button', 'data-action': 'next-dock', 'data-slot': String(next.position), onclick: () => goNext(next.position) },
           h('span.lbl', 'Next: '), h('span.nm', nex.name), h('i', ' ›')),
@@ -652,6 +708,7 @@ function dockEl() {
     }
     return h('section.dock', { 'data-dock': 'complete' },
       h('p.donestate', { 'data-done': 'all' }, h('b', 'All planned sets logged'), h('span', `${status} · ${ex.name}`)),
+      perf,
       row,
       minor);
   }
@@ -660,7 +717,8 @@ function dockEl() {
   const lt = M.lastTime(history(), ex.id);
   const hint = lt ? (lt.sets[n - 1] ? `last time ${shortSet(lt.sets[n - 1])}` : 'last time –') : 'not done before';
   const inc = Number(ex.increment_kg) > 0 ? Number(ex.increment_kg) : 1;
-  const target = U.targetText(ex.measure, slot.target_min, slot.target_max);
+  const tg = targetOf(slot, ex);
+  const target = U.targetText(ex.measure, tg.min, tg.max);
   const logBtn = h('button.log', { type: 'button', 'data-action': 'log', onclick: logSet });
   const updateLog = () => {
     logBtn.replaceChildren(...[`Log Set ${n}`, canLog(e) ? h('span', U.setText(ex.type, ex.measure, e.weight, e.value)) : null].filter(Boolean));
@@ -668,8 +726,19 @@ function dockEl() {
     const av = document.getElementById('active-v');
     if (av) av.textContent = entryText(ex, e);
   };
-  const changed = () => { updateLog(); saveDraft(); };
+  // Step-up indicator (v1.2.0): while the weight is below last time's last set + one increment
+  // and that set says the heavier weight should still reach the target, the weight figure is
+  // violet and a ▲ sits on its + button.  Information only: the pre-fill and the set are unchanged.
+  const signal = slotSignal(rec, slot);
+  const updateCue = () => {
+    const on = P.cueShown(signal, e.weight);
+    left.classList.toggle('cue', on);
+    left.dataset.cue = on ? 'up' : '';
+  };
+  const changed = () => { updateLog(); updateCue(); saveDraft(); };
   const left = stepper({ label: U.weightLabel(ex.type), value: e.weight, step: inc, kind: 'weight', name: 'weight', small: `step ${U.num(inc)} kg`, onChange: v => { e.weight = v; changed(); } });
+  if (signal.on) left.querySelector('[data-step=plus]').appendChild(h('span.upmark', { 'aria-hidden': 'true' }, '▲'));
+  updateCue();
   const right = ex.measure === 'time'
     ? stepper({ label: 'Seconds', value: e.value, step: 5, kind: 'secs', name: 'seconds', small: target ? `target ${target}` : 'steps of 5 s', onChange: v => { e.value = v; changed(); } })
     : stepper({ label: 'Reps', value: e.value, step: 1, kind: 'reps', name: 'reps', small: target ? `target ${target.replace(' reps', '')}` : '', onChange: v => { e.value = v; changed(); } });
@@ -1196,6 +1265,18 @@ function settingsView() {
     h('p.row', state.setupCheckedAt ? `Last checked ${U.dayMonTime(state.setupCheckedAt)}` : 'Not checked yet'),
     state.open ? h('p.row', 'A refresh applies from the next workout; the one in progress keeps its setup.') : null,
     h('button.btn.secondary', { type: 'button', 'data-action': 'refresh-setup', disabled: !s.token, onclick: () => refreshSetup(true) }, 'Refresh setup now')));
+
+  // Workout screen (v1.2.0): the step-up indicator, on by default.
+  const upOn = stepUpOn();
+  groups.push(h('section.group', { 'data-group': 'workout' }, h('h2', 'Workout screen'),
+    h('div.switchrow',
+      h('div.txt', h('b', 'Step-up indicator'),
+        h('span', { id: 'stepup-help' }, 'The weight turns violet, with ▲ on its + button, when last time’s last set says one step heavier should still reach the target.')),
+      h('button.switch', { type: 'button', role: 'switch', 'aria-checked': String(upOn), 'aria-label': 'Step-up indicator', 'aria-describedby': 'stepup-help', 'data-action': 'step-up',
+        onclick: async () => {
+          try { await saveSettings({ stepUp: !upOn }); } catch (e) { return storageFailed('The setting could not be saved', e); }
+          render();
+        } }, h('span.knob')))));
 
   // History download (6.5)
   groups.push(h('section.group', { 'data-group': 'restore' }, h('h2', 'History on GitHub'),

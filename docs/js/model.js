@@ -8,7 +8,9 @@
 //   sha        GitHub's version marker for the file, or null
 //   dirty      true while the doc has changes GitHub has not confirmed
 //   everSent   true once an upload of this session has been attempted
-//   snapshot   the setup the session started with (groups, exercises, workout)
+//   snapshot   the setup the session started with (groups, exercises, workout).  Exercises are copied
+//              whole, so they carry their optional default target_min / target_max (v1.2.0, used
+//              by progress.effectiveTarget); nothing about targets is written to the doc.
 //   slots      one per exercise slot: position, planned exercise and plan, actual exercise
 //   ui         current slot, entry draft, stopwatch start, and rirMoved: {set_id: RIR code} for
 //              RIR moved off a set by an extra set (v1.1.1).  Kept on the phone only, never in the doc.

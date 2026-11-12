@@ -22,6 +22,11 @@ const sh = (c, o = {}) => execSync(c, { encoding: 'utf8', env, stdio: ['ignore',
   await H.waitFor(async () => !!(await H.readDB(page)).kv.setup, { message: 'app to fetch the script-made setup' });
   const got = (await H.readDB(page)).kv.setup;
   console.log('APP HOLDS SCRIPT SETUP:', got.hash === scriptSetup.hash && got.published_at === scriptSetup.published_at);
+  // v1.2.0: exercise default targets travel workbook → script → setup.json → app
+  const tg = id => { const e = (got.exercises || []).find(x => x.id === id) || {}; return [e.target_min ?? null, e.target_max ?? null]; };
+  const targets = { A02: tg('A02'), B04: tg('B04'), C02: tg('C02'), A01: tg('A01') };
+  console.log('EXERCISE TARGETS IN APP SETUP (expect A02 8-12, B04 6-none, C02 60-75, A01 none):', JSON.stringify(targets));
+  if (JSON.stringify(targets) !== JSON.stringify({ A02: [8, 12], B04: [6, null], C02: [60, 75], A01: [null, null] })) throw new Error('exercise targets did not reach the app');
   // restore history from the store if offered / via Settings
   await page.reload(); await H.ready(page);
   const body = await page.textContent('body');

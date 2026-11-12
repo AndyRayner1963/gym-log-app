@@ -12,13 +12,18 @@ after(() => H.closeEnv());
 const clone = x => JSON.parse(JSON.stringify(x));
 const norm = s => s.replace(/\s+/g, ' ').trim();
 
-/** A fake store holding the fixture setup, and an app seeded with token, setup and (optionally) history. */
-async function start({ history = true, sw = false, token, time, fake } = {}) {
+/**
+ * A fake store holding the fixture setup, and an app seeded with token, setup and (optionally) history.
+ * history: true (the closed fixture sessions), false (none), or an array of session docs (v1.2.0).
+ * setup: the setup to seed and publish instead of the fixture's (v1.2.0).
+ */
+async function start({ history = true, sw = false, token, time, fake, setup = SETUP } = {}) {
   fake = fake || new FakeGitHub();
-  if (!fake.get('setup.json')) fake.put('setup.json', JSON.stringify(SETUP, null, 2));
+  if (!fake.get('setup.json')) fake.put('setup.json', JSON.stringify(setup, null, 2));
+  const sessions = Array.isArray(history) ? history : history ? H.closedFixtureDocs() : [];
   const app = await H.openApp({
     fake, sw, time,
-    seed: { settings: H.SETTINGS(fake, token ? { token } : {}), setup: SETUP, sessions: history ? H.closedFixtureDocs() : [] },
+    seed: { settings: H.SETTINGS(fake, token ? { token } : {}), setup, sessions },
   });
   return app;
 }
@@ -2102,6 +2107,455 @@ test('RIR (o): deleting the last set of a closed session in History does not inv
   await page.waitForSelector('[data-sheet=edit]');
   assert.equal(await page.textContent('[data-sheet=edit] [data-kind=rir] output'), '–');
   await page.click('[data-sheet=edit] [data-action=cancel]');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+// ---------------------------------------------------------------------------
+// v1.2.0: exercise default targets, the step-up indicator, performance against last time.
+// The calculations live in docs/js/progress.js (no imports, no DOM), tested directly in Node.
+
+const { pathToFileURL } = require('url');
+const progress = () => import(pathToFileURL(path.resolve(__dirname, '..', '..', 'docs', 'js', 'progress.js')).href);
+const VIOLET = 'rgb(180, 148, 255)';   // --up
+const AMBER = 'rgb(245, 184, 74)';     // --warn
+const MUTED = 'rgb(155, 164, 174)';    // --muted
+const WHITE = 'rgb(243, 245, 246)';    // --text
+const near = (a, b, what) => assert.ok(Math.abs(a - b) < 0.005, `${what}: ${a} ≈ ${b}`);
+
+let pastSeq = 0;
+/** A closed past session with the given sets: [{ex, w, v (reps or seconds), pos = 1, rir?, failed?}]. */
+function pastSession(date, sets) {
+  const seq = String(++pastSeq).padStart(4, '0');
+  const id = `0000beef-0000-4000-${seq}-000000000000`;
+  const count = {};
+  return {
+    format: 1, session_id: id, revision: 2, status: 'closed', date, started_at: `${date}T10:00:00+07:00`, workout_name: '', comment: '',
+    setup_published_at: SETUP.published_at, app_version: '1.1.1', updated_at: `${date}T11:00:00+07:00`, ended_at: `${date}T11:00:00+07:00`,
+    sets: sets.map((s, i) => {
+      const ex = SETUP.exercises.find(e => e.id === s.ex);
+      const pos = s.pos || 1;
+      count[pos] = (count[pos] || 0) + 1;
+      const set = { set_id: `0000beef-0000-4000-${seq}-${String(i + 1).padStart(12, '0')}`, position: pos, set_number: count[pos],
+        exercise_id: ex.id, exercise_name: ex.name, group: ex.group, type: ex.type, measure: ex.measure, weight_kg: s.w };
+      if (ex.measure === 'time') set.duration_s = s.v; else set.reps = s.v;
+      set.logged_at = `${date}T10:${String(10 + i).padStart(2, '0')}:00+07:00`;
+      if (s.rir !== undefined) { set.rir = s.rir; set.failed = !!s.failed; }
+      return set;
+    }),
+  };
+}
+
+/** Add an exercise through the Add Exercise panel (opening it when it is not open yet). */
+async function addEx(page, group, id) {
+  if (!(await page.$('[data-sheet=add]'))) await page.click('[data-action=add-exercise]');
+  await page.click(`[data-sheet=add] [data-group="${group}"]`);
+  await page.click(`[data-sheet=add] [data-ex=${id}]`);
+  await page.waitForSelector('[data-sheet=add]', { state: 'detached' });
+  await page.waitForSelector('.dock [data-kind=weight], [data-dock=complete]');
+}
+
+/** The entry dock's step-up cue: cue (data-cue), mark (the ▲ on + is visible), the weight figure's colour. */
+async function cueInfo(page) {
+  return page.evaluate(() => {
+    const st = document.querySelector('.dock [data-kind=weight]');
+    const mark = st.querySelector('[data-step=plus] .upmark');
+    return { cue: st.dataset.cue === 'up', mark: !!mark && getComputedStyle(mark).display !== 'none', color: getComputedStyle(st.querySelector('input.val')).color };
+  });
+}
+
+/** Slots whose name carries the ▲ in the Exercises panel (and its colour), then closes the panel. */
+async function panelUp(page) {
+  await page.click('[data-action=exercises]');
+  await page.waitForSelector('[data-sheet=exercises]');
+  const r = await page.$$eval('[data-sheet=exercises] [data-slot]', els => els.filter(e => e.querySelector('[data-up]'))
+    .map(e => ({ slot: Number(e.dataset.slot), color: getComputedStyle(e.querySelector('[data-up]')).color })));
+  await page.click('[data-sheet=exercises] [data-action=cancel]');
+  await page.waitForSelector('[data-sheet=exercises]', { state: 'detached' });
+  for (const x of r) assert.equal(x.color, VIOLET);
+  return r.map(x => x.slot);
+}
+
+/** The done state's performance line: {text, band, color}, or null. */
+async function perfInfo(page) {
+  return page.evaluate(() => {
+    const el = document.querySelector('.dock [data-perf]');
+    return el ? { text: el.textContent, band: el.dataset.band, color: getComputedStyle(el).color } : null;
+  });
+}
+
+/** Set keys of an unplanned set and a planned one, as the app wrote them before v1.2.0. */
+const SET_KEYS = ['exercise_id', 'exercise_name', 'group', 'logged_at', 'measure', 'position', 'set_id', 'set_number', 'type', 'weight_kg'];
+const PLANNED_KEYS = ['planned_exercise_id', 'planned_exercise_name'];
+const VALUE_KEYS = ['reps', 'duration_s', 'rir', 'failed', 'edited_at'];
+
+test('Step-up (a): the formulas by hand: e1RM, predicted reps, the signal; no RIR and F count as 0; types, timed rule, targets, bands', async () => {
+  const P = await progress();
+  const cable = { type: 'cable', measure: 'reps', increment_kg: 2.5 };
+  const t10 = { min: 10, max: 12 };
+  // W 40, r 12, k 2, i 2.5, min 10: e1RM 40 × (1 + 14/30) = 58.67; p = 30 × (58.67 / 42.5 − 1) − 2 = 9.41: no signal.
+  near(P.e1rm(40, 12, 2), 58.667, 'e1RM 40 × 12 at RIR 2');
+  near(P.predictedReps(40, 12, 2, 2.5), 9.412, 'predicted reps');
+  let s = P.stepUp(cable, { weight_kg: 40, reps: 12, rir: 2, failed: false }, t10);
+  assert.equal(s.on, false);
+  near(s.predicted, 9.412, 'predicted in the signal');
+  // The same with k 0 and r 14: e1RM 58.67, p = 30 × (58.67 / 42.5 − 1) = 11.41 ≥ 10: signal, next weight 42.5.
+  for (const base of [{ weight_kg: 40, reps: 14 }, { weight_kg: 40, reps: 14, rir: 0, failed: false }, { weight_kg: 40, reps: 14, rir: 0, failed: true }]) {
+    s = P.stepUp(cable, base, t10);
+    assert.deepEqual([s.on, s.next], [true, 42.5], `signal for ${JSON.stringify(base)}`);
+    near(s.predicted, 11.412, 'k 0: no RIR, RIR 0 and F alike');
+  }
+  near(P.setE1rm({ type: 'cable', measure: 'reps', weight_kg: 40, reps: 14 }), 58.667, 'set e1RM, no RIR');
+  assert.deepEqual([P.rirK({}), P.rirK({ rir: 0, failed: true }), P.rirK({ rir: 5, failed: false })], [0, 0, 5]);
+  assert.deepEqual([P.codeK(null), P.codeK('F'), P.codeK(0), P.codeK(3), P.codeK(5)], [0, 0, 0, 3, 5]);
+  // Above target_max still signals (no "two steps" logic); exactly at target_min signals.
+  assert.equal(P.stepUp(cable, { weight_kg: 40, reps: 25 }, t10).on, true);
+  const exact = P.predictedReps(40, 14, 0, 2.5);
+  assert.equal(P.stepUp(cable, { weight_kg: 40, reps: 14 }, { min: exact, max: null }).on, true);
+  // No target min, W 0, no increment, no baseline: no signal.
+  assert.equal(P.stepUp(cable, { weight_kg: 40, reps: 14 }, { min: null, max: 12 }).on, false);
+  assert.equal(P.stepUp(cable, { weight_kg: 0, reps: 30 }, t10).on, false);
+  assert.equal(P.stepUp({ ...cable, increment_kg: 0 }, { weight_kg: 40, reps: 14 }, t10).on, false);
+  assert.equal(P.stepUp({ ...cable, increment_kg: null }, { weight_kg: 40, reps: 14 }, t10).on, false);
+  assert.equal(P.stepUp(cable, null, t10).on, false);
+  // Every load type signals; bodyweight and assisted never do.
+  for (const type of ['machine', 'cable', 'barbell', 'dumbbell', 'kettlebell']) assert.equal(P.stepUp({ type, measure: 'reps', increment_kg: 2.5 }, { weight_kg: 40, reps: 14 }, t10).on, true, type);
+  for (const type of ['bodyweight', 'assisted']) {
+    assert.equal(P.stepUp({ type, measure: 'reps', increment_kg: 2.5 }, { weight_kg: 40, reps: 30 }, t10).on, false, type);
+    assert.equal(P.stepUp({ type, measure: 'time', increment_kg: 2.5 }, { weight_kg: 10, duration_s: 300 }, { min: 30, max: 60 }).on, false, `${type} timed`);
+  }
+  // Timed rule: duration ≥ target_max.
+  const kb = { type: 'kettlebell', measure: 'time', increment_kg: 2 };
+  assert.deepEqual(P.stepUp(kb, { weight_kg: 28, duration_s: 75 }, { min: 60, max: 75 }), { on: true, next: 30 });
+  assert.equal(P.stepUp(kb, { weight_kg: 28, duration_s: 74 }, { min: 60, max: 75 }).on, false);
+  assert.equal(P.stepUp(kb, { weight_kg: 28, duration_s: 90 }, { min: 60, max: null }).on, false, 'no target max');
+  // The cue: below W + i only, with a tolerance; blank shows nothing.
+  s = P.stepUp(cable, { weight_kg: 40, reps: 14 }, t10);
+  assert.deepEqual([40, 42.4, 42.5, 40 + 2.5, 0.1 + 42.4, 45, null].map(w => P.cueShown(s, w)), [true, true, false, false, false, false, false]);
+  assert.equal(P.cueShown({ on: false, next: null }, 20), false);
+  // Effective target: the slot's own where present, each on its own; else the exercise's default.
+  const def = { target_min: 10, target_max: 15 };
+  assert.deepEqual(P.effectiveTarget({ target_min: null, target_max: null }, def), { min: 10, max: 15 });
+  assert.deepEqual(P.effectiveTarget({ target_min: 8, target_max: 12 }, def), { min: 8, max: 12 });
+  assert.deepEqual(P.effectiveTarget({ target_min: 6, target_max: null }, def), { min: 6, max: 15 });
+  assert.deepEqual(P.effectiveTarget({ target_min: null, target_max: 20 }, { target_min: 6 }), { min: 6, max: 20 });
+  assert.deepEqual(P.effectiveTarget({ target_min: null, target_max: null }, { id: 'A01' }), { min: null, max: null }, 'a setup without targets');
+  // Performance: today's last set with the stepper's code against the baseline; bands at 103 and 97.
+  const base = { type: 'cable', measure: 'reps', weight_kg: 40, reps: 12, rir: 2, failed: false };   // 58.67
+  const today = { type: 'cable', measure: 'reps', weight_kg: 40, reps: 12, rir: 3, failed: false };
+  const p = code => { const r = P.performance(today, code, base); return [P.performanceText(r), r.band]; };
+  assert.deepEqual(p(3), ['e1RM 60.0 · 102% of last time', 'same']);
+  assert.deepEqual(p(4), ['e1RM 61.3 · 105% of last time', 'up']);
+  assert.deepEqual(p(0), ['e1RM 56.0 · 95% of last time', 'down']);
+  assert.deepEqual(p('F'), p(0));
+  assert.deepEqual(p(null), p(0), '"–" counts as 0');
+  assert.deepEqual(p(undefined), p(3), 'no code: the set’s own RIR');
+  assert.deepEqual([103, 102, 98, 97].map(P.band), ['up', 'same', 'same', 'down']);
+  assert.equal(P.performance(today, 3, null), null, 'no baseline');
+  assert.equal(P.performance({ ...today, type: 'assisted' }, 3, { ...base, type: 'assisted' }), null, 'assisted');
+  assert.equal(P.performance({ ...today, type: 'bodyweight' }, 3, { ...base, type: 'bodyweight' }), null, 'bodyweight');
+  assert.equal(P.performance({ type: 'kettlebell', measure: 'time', weight_kg: 28, duration_s: 70 }, 3, { type: 'kettlebell', measure: 'time', weight_kg: 28, duration_s: 60 }), null, 'timed');
+});
+
+test('Step-up (b): the entry cue for a free-form exercise from its default target; gone at W + i; ▲ in the Exercises panel until a set is logged; nothing recorded', async () => {
+  // A02 (cable, step 2.5, default 8–12).  Last time's last set 40 × 12 at RIR 1:
+  // e1RM 40 × (1 + 13/30) = 57.33; at 42.5: 30 × (57.33 / 42.5 − 1) − 1 = 9.47 ≥ 8, so the signal is on.
+  const hist = [pastSession('2026-11-10', [{ ex: 'A02', w: 40, v: 12 }, { ex: 'A02', w: 40, v: 12, rir: 1 }])];
+  const fake = new FakeGitHub();
+  const app = await start({ history: hist, fake });
+  const { page } = app;
+  await begin(page, '');
+  await addEx(page, 'Push', 'A02');
+  let e = await H.entryValues(page);
+  assert.deepEqual([e.weight, e.value], ['40', '12'], 'pre-fill unchanged (rule 1): the cue changes no figure');
+  assert.deepEqual(await cueInfo(page), { cue: true, mark: true, color: VIOLET });
+  assert.equal(await page.getAttribute('.dock [data-kind=weight] [data-step=plus]', 'aria-label'), 'Weight kg up');
+  assert.equal(await page.textContent('.dock [data-kind=weight] [data-step=plus]'), '+▲');
+  assert.equal(await page.textContent('.dock [data-kind=reps] small'), 'target 8–12');
+  assert.deepEqual(await panelUp(page), [1]);
+  // + once: 42.5 = W + i, and the cue goes.
+  await page.click('.dock [data-kind=weight] [data-step=plus]');
+  assert.deepEqual(await cueInfo(page), { cue: false, mark: false, color: WHITE });
+  // − back to 40: it returns.  Typed figures too, with W + i itself counting as reached.
+  await page.click('.dock [data-kind=weight] [data-step=minus]');
+  assert.equal((await cueInfo(page)).cue, true);
+  for (const [w, cue] of [['42.4', true], ['42,5', false], ['45', false], ['', false], ['37.5', true]]) {
+    await page.fill('.dock input[name=weight]', w);
+    assert.equal((await cueInfo(page)).cue, cue, `weight "${w}"`);
+  }
+  // Log a set at 45: the slot has a set today, so its ▲ leaves the panel; the entry cue still follows the weight.
+  await H.setEntry(page, 45);
+  await H.logSet(page);
+  e = await H.entryValues(page);
+  assert.equal(e.weight, '45');
+  assert.equal((await cueInfo(page)).cue, false);
+  assert.deepEqual(await panelUp(page), []);
+  await H.setEntry(page, 40);
+  assert.equal((await cueInfo(page)).cue, true);
+  // A reload brings the cue back with the draft.
+  await H.waitFor(async () => (await H.openSession(page)).ui.draft.weight === 40, { message: 'draft saved' });
+  await page.reload();
+  await H.ready(page);
+  assert.deepEqual(await cueInfo(page), { cue: true, mark: true, color: VIOLET });
+  // Nothing about it is written: the set has the usual keys only.
+  await H.setEntry(page, 45);
+  await H.logSet(page);
+  await endWorkout(page);
+  await H.waitFor(() => fake.sessionPaths().length === 1 && fake.json(fake.sessionPaths()[0]).status === 'closed', { message: 'uploaded' });
+  for (const s of fake.json(fake.sessionPaths()[0]).sets) assert.deepEqual(Object.keys(s).sort(), [...SET_KEYS, 'reps'].sort());
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('Step-up (c): preset workouts: workout targets, the timed rule, F as 0; bodyweight and assisted never signal', async () => {
+  const hist = [pastSession('2026-11-10', [
+    { ex: 'B01', w: 45, v: 14, pos: 1 },                       // cable, 10–12: 30 × (66 / 47.5 − 1) = 11.68 ≥ 10
+    { ex: 'B03', w: 25, v: 30, pos: 2 },                       // assisted: never
+    { ex: 'D01', w: 2.5, v: 90, pos: 3 },                      // bodyweight time, 90 s ≥ 60: never
+    { ex: 'C01', w: 130, v: 15, rir: 0, failed: true, pos: 4 }, // F is k 0: 30 × (195 / 140 − 1) = 11.79 ≥ 10
+    { ex: 'C02', w: 28, v: 75, pos: 5 },                       // kettlebell time, 75 s ≥ 75: signal, next 30
+    { ex: 'D02', w: 0, v: 40, pos: 6 },                        // bodyweight reps: never
+  ])];
+  const app = await start({ history: hist });
+  const { page } = app;
+  await begin(page, 'Test Upper');
+  assert.deepEqual(await panelUp(page), [2], 'only the cable row: A01 has no history, B03 and D01 never signal');
+  assert.equal((await cueInfo(page)).cue, false);
+  await H.goSlot(page, 2);
+  assert.deepEqual(await cueInfo(page), { cue: true, mark: true, color: VIOLET });
+  assert.equal((await H.entryValues(page)).weight, '45');
+  await page.click('.dock [data-kind=weight] [data-step=plus]');
+  assert.equal((await cueInfo(page)).cue, false, '47.5 = 45 + 2.5');
+  for (const pos of [3, 4]) {
+    await H.goSlot(page, pos);
+    assert.deepEqual(await cueInfo(page), { cue: false, mark: false, color: WHITE }, `slot ${pos}`);
+    assert.equal(await page.$('.dock .upmark'), null);
+  }
+  await endWorkout(page);
+  await begin(page, 'Test Lower');
+  assert.deepEqual(await panelUp(page), [1, 2]);
+  assert.deepEqual(await cueInfo(page), { cue: true, mark: true, color: VIOLET }, 'leg press: a failed set counts RIR 0');
+  await H.goSlot(page, 2);
+  await page.waitForSelector('.dock input[name=seconds]');
+  assert.equal((await H.entryValues(page)).weight, '28');
+  assert.deepEqual(await cueInfo(page), { cue: true, mark: true, color: VIOLET }, 'timed: 75 s reached the 75 s target');
+  await page.click('.dock [data-kind=weight] [data-step=plus]');
+  assert.equal((await cueInfo(page)).cue, false, '30 = 28 + 2');
+  await H.goSlot(page, 3);
+  assert.equal((await cueInfo(page)).cue, false, 'bodyweight crunch');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('Step-up (d): the Settings switch is on by default; off hides every cue and survives a reload', async () => {
+  const hist = [pastSession('2026-11-10', [{ ex: 'B01', w: 45, v: 14 }])];
+  const app = await start({ history: hist });
+  const { page } = app;
+  assert.equal((await H.readDB(page)).kv.settings.stepUp, true, 'stored on by default');
+  await begin(page, 'Test Upper');
+  await H.goSlot(page, 2);
+  assert.equal((await cueInfo(page)).cue, true);
+  const toSettings = async () => { await page.click('#strip'); await page.waitForSelector('#app[data-view=settings]'); };
+  const back = async () => { await page.click('[data-action=back]'); await page.waitForSelector('#app[data-view=workout]'); };
+  await toSettings();
+  const sw = '[data-action=step-up]';
+  assert.equal(await page.getAttribute(sw, 'aria-checked'), 'true');
+  assert.equal(await page.getAttribute(sw, 'role'), 'switch');
+  assert.match(norm(await page.innerText('[data-group=workout]')), /^Workout screen Step-up indicator The weight turns violet/);
+  const box = await page.locator(sw).boundingBox();
+  assert.ok(box.width >= 44 && box.height >= 44, `switch is 44 × 44 or more (${JSON.stringify(box)})`);
+  await page.click(sw);
+  await page.waitForSelector(`${sw}[aria-checked=false]`);
+  assert.equal((await H.readDB(page)).kv.settings.stepUp, false);
+  assert.equal((await H.readDB(page)).kv.settings.token, H.SETTINGS(app.fake).token, 'the other settings stay');
+  await back();
+  assert.deepEqual(await cueInfo(page), { cue: false, mark: false, color: WHITE });
+  assert.equal(await page.$('.dock .upmark'), null);
+  assert.deepEqual(await panelUp(page), []);
+  await page.reload();
+  await H.ready(page);
+  assert.equal((await cueInfo(page)).cue, false, 'still off after a reload');
+  await toSettings();
+  assert.equal(await page.getAttribute(sw, 'aria-checked'), 'false');
+  await page.click(sw);
+  await page.waitForSelector(`${sw}[aria-checked=true]`);
+  await back();
+  assert.deepEqual(await cueInfo(page), { cue: true, mark: true, color: VIOLET });
+  assert.deepEqual(await panelUp(page), [2]);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('Performance (a): the done-state line shows e1RM against last time, in its colour band, and follows the RIR stepper; nothing written', async () => {
+  // A02 last time: 40 × 12, then 40 × 12 at RIR 2 (the baseline): e1RM 58.67.
+  const hist = [pastSession('2026-11-10', [{ ex: 'A02', w: 40, v: 12 }, { ex: 'A02', w: 40, v: 12, rir: 2 }])];
+  const fake = new FakeGitHub();
+  const app = await start({ history: hist, fake });
+  const { page } = app;
+  await begin(page, '');
+  await addEx(page, 'Push', 'A02');
+  await H.logSet(page);
+  await H.logSet(page);
+  assert.equal(await perfInfo(page), null, 'not before the done state');
+  await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete] [data-perf]');
+  // 40 × 12 at the default RIR 3: 40 × 1.5 = 60.0, 102 %: normal muted text.
+  assert.deepEqual(await perfInfo(page), { text: 'e1RM 60.0 · 102% of last time', band: 'same', color: MUTED });
+  // The dock's buttons stay in the lower third and at full size.
+  const geo = await page.evaluate(() => {
+    const r = s => document.querySelector(s).getBoundingClientRect();
+    const btns = [...document.querySelectorAll('.dock button')].filter(b => !b.closest('.minor')).map(b => { const x = b.getBoundingClientRect(); return { top: x.top, w: x.width, h: x.height }; });
+    const p = document.querySelector('.dock [data-perf]');
+    return { perf: r('.dock [data-perf]'), row: r('.dock .donerow'), status: r('.dock [data-done]'), btns, fits: p.scrollWidth <= p.clientWidth, vh: innerHeight };
+  });
+  assert.ok(geo.status.bottom <= geo.perf.top + 1 && geo.perf.bottom <= geo.row.top, `status, the line, then the RIR row (${JSON.stringify(geo)})`);
+  assert.ok(geo.btns.length >= 3 && geo.btns.every(b => b.top >= geo.vh * 2 / 3 && b.w >= 44 && b.h >= 44), `buttons in the lower third, 44 × 44 or more (${JSON.stringify(geo.btns)})`);
+  assert.ok(geo.fits, 'the line fits on one line');
+  // Plus to 4: 61.3, 105 %, violet, at once.
+  await page.clock.fastForward(1100);
+  await page.click(`${RIR} [data-step=plus]`);
+  assert.deepEqual(await perfInfo(page), { text: 'e1RM 61.3 · 105% of last time', band: 'up', color: VIOLET });
+  await H.waitFor(async () => (await slotRir(page, 1))[2].rir === 4, { message: 'rir 4 stored' });
+  assert.deepEqual(await perfInfo(page), { text: 'e1RM 61.3 · 105% of last time', band: 'up', color: VIOLET }, 'the same after the redraw');
+  // Down to 0: 56.0, 95 %, amber; F counts as 0 too.
+  for (let i = 0; i < 4; i++) await page.click(`${RIR} [data-step=minus]`);
+  assert.deepEqual(await perfInfo(page), { text: 'e1RM 56.0 · 95% of last time', band: 'down', color: AMBER });
+  await page.click(`${RIR} [data-step=minus]`);
+  assert.equal(await rirShown(page), 'F');
+  assert.deepEqual(await perfInfo(page), { text: 'e1RM 56.0 · 95% of last time', band: 'down', color: AMBER });
+  await H.waitFor(async () => (await slotRir(page, 1))[2].failed === true, { message: 'F stored' });
+  // "–" (removed in Edit Set) counts as 0 as well.
+  const set3 = (await H.openSession(page)).doc.sets[2].set_id;
+  await page.click(`[data-set="${set3}"]`);
+  await page.waitForSelector('[data-sheet=edit]');
+  await page.click('[data-sheet=edit] [data-kind=rir] [data-step=minus]');
+  await page.click('[data-sheet=edit] [data-action=save]');
+  await page.waitForSelector('[data-sheet=edit]', { state: 'detached' });
+  await H.waitFor(async () => !(await slotRir(page, 1))[2].hasRir, { message: 'RIR removed' });
+  assert.equal(await rirShown(page), '–');
+  assert.deepEqual(await perfInfo(page), { text: 'e1RM 56.0 · 95% of last time', band: 'down', color: AMBER });
+  // Nothing about it is written to the session file or the upload.
+  await endWorkout(page);
+  await H.waitFor(() => fake.sessionPaths().length === 1 && fake.json(fake.sessionPaths()[0]).status === 'closed', { message: 'uploaded' });
+  const doc = fake.json(fake.sessionPaths()[0]);
+  const fixtureClosed = H.FIXTURE_SESSIONS.map(s => JSON.parse(s.text)).find(d => d.status === 'closed');
+  assert.deepEqual(Object.keys(doc).sort(), Object.keys(fixtureClosed).sort());
+  for (const s of doc.sets) for (const k of Object.keys(s)) assert.ok([...SET_KEYS, ...VALUE_KEYS].includes(k), `set key ${k}`);
+  assert.doesNotMatch(JSON.stringify(doc), /e1rm|target|step|percent/i);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('Performance (b): no line without history or for bodyweight, assisted and timed exercises; a swap compares with the actual exercise', async () => {
+  // No history.
+  let app = await start({ history: false });
+  let page = app.page;
+  await begin(page);
+  await H.setEntry(page, 40, 12);
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete]');
+  assert.equal(await perfInfo(page), null, 'no baseline, no line');
+  await app.close();
+
+  app = await start();
+  page = app.page;
+  await begin(page);
+  // Set 1 as Test Machine Press, then swapped to Test Dumbbell Press for sets 2 and 3 (pre-filled 14 × 12).
+  await H.logSet(page);
+  await page.click('[data-action=swap]');
+  await page.click('[data-sheet=swap] [data-ex=A03]');
+  await page.waitForSelector('[data-sheet=swap]', { state: 'detached' });
+  await H.logSet(page);
+  await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete] [data-perf]');
+  // Against A03's last time (8 Nov, last set 16 × 9 at RIR 1: 21.33), not A01's: 14 × 1.5 = 21.0, 98 %.
+  assert.deepEqual(await perfInfo(page), { text: 'e1RM 21.0 · 98% of last time', band: 'same', color: MUTED });
+  // Assisted, bodyweight (timed) and a kettlebell carry (timed, added): no line.
+  for (const pos of [3, 4]) {
+    await H.goSlot(page, pos);
+    for (let i = 0; i < 3; i++) await H.logSet(page);
+    await page.waitForSelector('[data-dock=complete]');
+    assert.equal(await perfInfo(page), null, `slot ${pos}`);
+  }
+  await addEx(page, 'Legs', 'C02');
+  for (let i = 0; i < 3; i++) await H.logSet(page);
+  await page.waitForSelector('[data-dock=complete]');
+  assert.equal(await perfInfo(page), null, 'timed kettlebell');
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('Targets (a): free-form and added exercises show their default target; a workout target overrides it; the snapshot carries it', async () => {
+  const app = await start();
+  const { page } = app;
+  const meta = () => page.textContent('.ex.current .meta');
+  const small = () => page.textContent('.dock .steps .step:nth-child(2) small');
+  await begin(page, '');
+  await addEx(page, 'Push', 'A03');
+  assert.equal(await meta(), 'Push · dumbbell · 10–15 reps');
+  assert.equal(await small(), 'target 10–15');
+  await addEx(page, 'Pull', 'B04');
+  assert.equal(await meta(), 'Pull · barbell · 6+ reps', 'min only');
+  assert.equal(await small(), 'target 6+');
+  await addEx(page, 'Legs', 'C02');
+  assert.equal(await meta(), 'Legs · kettlebell · 60–75 s');
+  assert.equal(await small(), 'target 60–75 s');
+  await addEx(page, 'Push', 'A01');
+  assert.equal(await meta(), 'Push · machine', 'no default, no target');
+  assert.equal(await small(), '');
+  // (Test Barbell Row also carries the step-up ▲: 8 Nov, 22.5 × 10 predicts 7.9 reps at 23.75, 6 or more.)
+  const info = await H.panelInfo(page);
+  assert.deepEqual(info.map(i => i.text.replace(/ ?now/, '')), [
+    '1 Test Dumbbell Press not started · 10–15 reps', '2 Test Barbell Row▲ not started · 6+ reps',
+    '3 Test Kettlebell Carry not started · 60–75 s', '4 Test Machine Press not started']);
+  const snap = (await H.openSession(page)).snapshot.exercises;
+  assert.deepEqual([snap.find(e => e.id === 'A03').target_min, snap.find(e => e.id === 'A03').target_max], [10, 15]);
+  assert.equal(snap.find(e => e.id === 'B04').target_min, 6);
+  assert.ok(!('target_max' in snap.find(e => e.id === 'B04')), 'absent stays absent');
+  await endWorkout(page);
+  // Preset: slot 1 (8–12 in the workout) swapped to A03 (default 10–15) keeps the workout's 8–12.
+  await begin(page, 'Test Upper');
+  assert.equal(await meta(), 'Push · machine · 3 sets × 8–12 reps');
+  await page.click('[data-action=swap]');
+  await page.click('[data-sheet=swap] [data-ex=A03]');
+  await page.waitForSelector('[data-sheet=swap]', { state: 'detached' });
+  assert.equal(await meta(), 'Push · dumbbell · 3 sets × 8–12 reps · instead of Test Machine Press');
+  assert.equal(await small(), 'target 8–12');
+  assert.equal(norm(await page.innerText('[data-action=next]')), 'Next: Test Cable Row · 3 × 10–12 reps ›');
+  await addEx(page, 'Push', 'A02');
+  assert.equal(await meta(), 'Push · cable · added · 8–12 reps');
+  assert.match((await H.panelInfo(page)).find(i => i.slot === 5).text, /Test Cable Press\s*now not started · added · 8–12 reps$/);
+  assert.deepEqual(app.errors, []);
+  await app.close();
+});
+
+test('Targets (b): a setup.json without targets still works; the session keeps its snapshot when a setup with targets arrives', async () => {
+  const bare = clone(SETUP);
+  for (const e of bare.exercises) { delete e.target_min; delete e.target_max; }
+  const fake = new FakeGitHub();
+  const app = await start({ fake, setup: bare });
+  const { page } = app;
+  await begin(page, '');
+  await addEx(page, 'Push', 'A03');
+  assert.equal(await page.textContent('.ex.current .meta'), 'Push · dumbbell');
+  assert.equal(await page.textContent('.dock [data-kind=reps] small'), '');
+  assert.equal((await cueInfo(page)).cue, false, 'no target, no signal');
+  await H.logSet(page);
+  // The targets arrive with a new setup: the session in progress keeps its own.
+  const s2 = clone(SETUP);
+  s2.published_at = '2026-11-12T09:00:00+07:00';
+  s2.hash = 'with-targets';
+  fake.put('setup.json', JSON.stringify(s2, null, 2));
+  await page.click('#strip');
+  await page.click('[data-action=refresh-setup]');
+  await H.waitFor(async () => (await H.readDB(page)).kv.setup.published_at === s2.published_at, { message: 'setup stored' });
+  await page.click('[data-action=back]');
+  await page.waitForSelector('#app[data-view=workout]');
+  assert.equal(await page.textContent('.ex.current .meta'), 'Push · dumbbell');
+  await endWorkout(page);
+  await begin(page, '');
+  await addEx(page, 'Push', 'A03');
+  assert.equal(await page.textContent('.ex.current .meta'), 'Push · dumbbell · 10–15 reps');
   assert.deepEqual(app.errors, []);
   await app.close();
 });
