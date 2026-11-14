@@ -715,7 +715,10 @@ function dockEl() {
   const e = ensureEntry(slot);
   const n = M.nextSetNumber(rec, slot);
   const lt = M.lastTime(history(), ex.id);
-  const hint = lt ? (lt.sets[n - 1] ? `last time ${shortSet(lt.sets[n - 1])}` : 'last time –') : 'not done before';
+  // Set 1's hint is last time's LAST set, the set it is pre-filled from (1.2.2); later sets show
+  // last time's set of the same number.
+  const ref = lt ? (n === 1 ? lt.sets[lt.sets.length - 1] : lt.sets[n - 1]) : null;
+  const hint = lt ? (ref ? `last time ${shortSet(ref)}` : 'last time –') : 'not done before';
   const inc = Number(ex.increment_kg) > 0 ? Number(ex.increment_kg) : 1;
   const tg = targetOf(slot, ex);
   const target = U.targetText(ex.measure, tg.min, tg.max);

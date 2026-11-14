@@ -213,11 +213,16 @@ test('App 5: pre-fill rules 1, 2 and 3, for both measures', async () => {
   await page.waitForSelector('.dock input[name=seconds]');
   e = await H.entryValues(page);
   assert.deepEqual([e.weight, e.value], ['30', '55']);
+  // 1.2.2: set 1's "last time" hint is the set it is pre-filled from (last time's last set) ...
+  const hintText = async () => (await page.textContent('.dock .title span')).replace(/\s+/g, ' ').trim();
+  assert.match(await hintText(), /^last time 30 × 55 s$/);
   // Rule 2, time.
   await H.setEntry(page, 30, 60);
   await H.logSet(page);
   e = await H.entryValues(page);
   assert.deepEqual([e.weight, e.value], ['30', '60']);
+  // ... and set 2's is last time's set 2 (30 × 58), as before.
+  assert.match(await hintText(), /^last time 30 × 58 s$/);
   assert.match(e.logText, /Log Set 2\s*30 kg each × 60 s/);
   await app.close();
 
