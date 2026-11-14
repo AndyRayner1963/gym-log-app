@@ -151,8 +151,10 @@ export function prefill(rec, slot, history) {
   if (just) return { weight: just.weight_kg, value: just.measure === 'time' ? just.duration_s : just.reps, source: 'today' };
   const last = lastTime(history, exId);
   if (last) {
-    const s1 = last.sets[0];
-    return { weight: s1.weight_kg, value: s1.measure === 'time' ? s1.duration_s : s1.reps, source: 'last' };
+    // Rule 1 (changed in 1.2.1, Andy): the LAST set of that session (the set the step-up
+    // indicator and the done-state comparison also use), not set 1.
+    const sl = last.sets[last.sets.length - 1];
+    return { weight: sl.weight_kg, value: sl.measure === 'time' ? sl.duration_s : sl.reps, source: 'last' };
   }
   return { weight: null, value: null, source: 'blank' };
 }

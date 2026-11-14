@@ -37,13 +37,15 @@ const sh = (c, o = {}) => execSync(c, { encoding: 'utf8', env, stdio: ['ignore',
   await page.reload(); await H.ready(page);
   if (await page.$('[data-dialog] [data-role=cancel]')) await page.click('[data-dialog] [data-role=cancel]');
   await page.click('[data-workout="Test Lower"]'); await page.waitForSelector('#app[data-view=workout]');
-  const pre = await H.entryValues(page); console.log('PREFILL set 1 (expect last time 130 x 13):', pre.weight, pre.value);
+  const pre = await H.entryValues(page); console.log('PREFILL set 1 (expect last time\'s last set 130 x 12):', pre.weight, pre.value);
+  if (`${pre.weight} ${pre.value}` !== '130 12') throw new Error(`set 1 pre-fill ${pre.weight} x ${pre.value}, expected 130 x 12 (last set of last time)`);
   await H.setEntry(page, 140, 12); await H.logSet(page);
   const p2 = await H.entryValues(page); console.log('PREFILL set 2 (expect today 140 x 12):', p2.weight, p2.value);
   await H.logSet(page); await H.setEntry(page, undefined, 10); await H.logSet(page);
   console.log('STAYS AFTER LAST PLANNED SET:', !!(await page.$('[data-dock=complete]')));
   await H.tapNext(page);
-  const p3 = await H.entryValues(page); console.log('NEXT EXERCISE prefill (carry, expect 28 x 75):', p3.weight, p3.value, p3.logText);
+  const p3 = await H.entryValues(page); console.log('NEXT EXERCISE prefill (carry, expect last time\'s last set 30 x 55):', p3.weight, p3.value, p3.logText);
+  if (`${p3.weight} ${p3.value}` !== '30 55') throw new Error(`carry pre-fill ${p3.weight} x ${p3.value}, expected 30 x 55`);
   await H.setEntry(page, 30, 62); await H.logSet(page); await H.logSet(page); await H.logSet(page);
   await H.tapExtra(page); const px = await H.entryValues(page); console.log('EXTRA SET prefill (expect 30 x 62):', px.weight, px.value); await H.logSet(page);
   await H.tapNext(page);

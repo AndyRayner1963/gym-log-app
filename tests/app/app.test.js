@@ -198,20 +198,21 @@ test('App 5: pre-fill rules 1, 2 and 3, for both measures', async () => {
   let app = await start();
   let page = app.page;
   await begin(page, 'Test Lower');
-  // Rule 1, reps: set 1 of the last closed session with Test Leg Press (9 Nov: 130 × 13, not 5 Nov: 120 × 15).
+  // Rule 1 (1.2.1), reps: the LAST set of the last closed session with Test Leg Press (9 Nov: 130 × 13, 12, 12;
+  // not its set 1, 130 × 13, and not 5 Nov's last set, 130 × 11).
   let e = await H.entryValues(page);
-  assert.deepEqual([e.weight, e.value, e.logDisabled], ['130', '13', false]);
-  assert.match(e.logText, /Log Set 1\s*130 kg × 13/);
+  assert.deepEqual([e.weight, e.value, e.logDisabled], ['130', '12', false]);
+  assert.match(e.logText, /Log Set 1\s*130 kg × 12/);
   // Rule 2, reps: set 2 takes today's values from the set just logged.
   await H.setEntry(page, 140, 10);
   await H.logSet(page);
   e = await H.entryValues(page);
   assert.deepEqual([e.weight, e.value], ['140', '10']);
-  // Rule 1, time: Test Kettlebell Carry, 9 Nov set 1: 28 kg × 75 s (not 5 Nov: 70 s).
+  // Rule 1 (1.2.1), time: Test Kettlebell Carry, 9 Nov last set: 30 kg × 55 s (not its set 1, 28 × 75; not 5 Nov: 28 × 61).
   await H.goSlot(page, 2);
   await page.waitForSelector('.dock input[name=seconds]');
   e = await H.entryValues(page);
-  assert.deepEqual([e.weight, e.value], ['28', '75']);
+  assert.deepEqual([e.weight, e.value], ['30', '55']);
   // Rule 2, time.
   await H.setEntry(page, 30, 60);
   await H.logSet(page);
@@ -283,9 +284,9 @@ test('App 6: swap mid-exercise: logged sets keep the first exercise; later sets 
   assert.match(await page.textContent('[data-sheet=swap] .sub'), /2 sets left; the set already logged stays as Test Cable Row/);
   await page.click('[data-sheet=swap] [data-ex=B02]');
   await page.waitForSelector('[data-sheet=swap]', { state: 'detached' });
-  // Pre-fill from the new exercise's own history (7 Nov, first set of Test Machine Row: 35 × 12).
+  // Pre-fill from the new exercise's own history (7 Nov, last set of Test Machine Row: 35 × 11; rule 1 since 1.2.1).
   e = await H.entryValues(page);
-  assert.deepEqual([e.weight, e.value], ['35', '12']);
+  assert.deepEqual([e.weight, e.value], ['35', '11']);
   await H.logSet(page);
   await H.logSet(page);
   const rec = await H.openSession(page);
@@ -370,7 +371,7 @@ test('App 8: each confirmation box appears, cancels by default, and acts only on
   // Undo last set.
   await cancelThreeWays('undo', clickAndBox('[data-action=undo]'), countIs(2));
   await page.click('[data-action=undo]');
-  assert.match(norm(await page.textContent('[data-dialog=undo] h2')), /^Remove the last set \(40 kg × 12\)\?$/);
+  assert.match(norm(await page.textContent('[data-dialog=undo] h2')), /^Remove the last set \(42.5 kg × 8\)\?$/);
   await page.click('[data-dialog=undo] [data-role=ok]');
   await H.waitFor(async () => (await H.openSession(page)).doc.sets.length === 1, { message: 'undo' });
 
@@ -831,7 +832,7 @@ test('Restore: with a working token and no sessions, the app offers and download
   await page.click('[data-action=back]');
   await begin(page, 'Test Lower');
   const e = await H.entryValues(page);
-  assert.deepEqual([e.weight, e.value], ['130', '13']);
+  assert.deepEqual([e.weight, e.value], ['130', '12'], 'rule 1 (1.2.1): last set of 9 Nov');
   assert.deepEqual(fake.puts.map(p => p.path), [open.path], 'only the auto-closed session was written back');
   await app.close();
 });
@@ -864,7 +865,7 @@ test('Storage failure: a set that cannot be written is named in a blocking messa
   await page.clock.fastForward(1100);
   await page.click('[data-action=log]');
   await page.waitForSelector('[data-dialog=storage-failed]');
-  assert.match(norm(await page.textContent('[data-dialog=storage-failed]')), /Set 1 of Test Machine Press \(40 kg × 12\) was not saved/);
+  assert.match(norm(await page.textContent('[data-dialog=storage-failed]')), /Set 1 of Test Machine Press \(42.5 kg × 8\) was not saved/);
   assert.equal(await page.locator('.ex.current .set.done').count(), 0);
   await page.click('[data-dialog=storage-failed] [data-role=ok]');
   assert.equal((await H.openSession(page)).doc.sets.length, 0);
@@ -1475,7 +1476,7 @@ test('RIR (a): logging the last planned set stores rir 3, failed false, in the d
   assert.ok(geo.rir.left < geo.extra.left && Math.abs(geo.rir.top - geo.extra.top) < 1 && Math.abs(geo.rir.height - geo.extra.height) < 1, `RIR left, + Extra set right, same height (${JSON.stringify(geo)})`);
   assert.ok(geo.status.bottom <= geo.rir.top && geo.rir.bottom <= geo.next.top, 'status, then the row, then Next');
   // The set row shows it.
-  assert.match(norm(await page.innerText(`.ex.current [data-set="${rec.doc.sets[2].set_id}"]`)), /40 kg × 12 · RIR 3/);
+  assert.match(norm(await page.innerText(`.ex.current [data-set="${rec.doc.sets[2].set_id}"]`)), /42.5 kg × 8 · RIR 3/);
   assert.doesNotMatch(norm(await page.innerText(`.ex.current [data-set="${rec.doc.sets[0].set_id}"]`)), /RIR/);
   await H.waitFor(() => fake.sessionPaths().length === 1 && fake.json(fake.sessionPaths()[0]).sets.length === 3, { message: 'uploaded' });
   const up = fake.json(fake.sessionPaths()[0]).sets.sort((a, b) => a.set_number - b.set_number);
@@ -1506,7 +1507,7 @@ test('RIR (b): minus to F stores rir 0 failed true; plus to 5+ stores 5 and stop
   let rec = await H.openSession(page);
   assert.equal(rec.doc.revision, rev0 + 4, 'one revision per tap, none for the stopped tap');
   assert.deepEqual((await slotRir(page, 1))[2], { n: 3, rir: 0, failed: true, hasRir: true, edited: false });
-  assert.match(norm(await page.innerText(`.ex.current [data-set="${rec.doc.sets[2].set_id}"]`)), /40 kg × 12 · F/);
+  assert.match(norm(await page.innerText(`.ex.current [data-set="${rec.doc.sets[2].set_id}"]`)), /42.5 kg × 8 · F/);
   for (const v of [0, 1, 2, 3, 4]) await tapRir(page, 'plus', 1, 3, v, false);
   await tapRir(page, 'plus', 1, 3, 5, false);
   assert.equal(await rirShown(page), '5+');
@@ -1824,7 +1825,7 @@ test('RIR (h): restored fixture sessions with and without RIR are stored and sho
   await page.click('[data-action=back]');
   await begin(page, 'Test Lower');
   const e = await H.entryValues(page);
-  assert.deepEqual([e.weight, e.value], ['130', '13']);
+  assert.deepEqual([e.weight, e.value], ['130', '12'], 'rule 1 (1.2.1): last set of 9 Nov');
   assert.doesNotMatch(await page.textContent('.ex.current .lasttime'), /RIR/);
   assert.deepEqual(app.errors, []);
   assert.deepEqual(app.consoleErrors.filter(m => !/status of 404/.test(m)), []);
@@ -2468,8 +2469,9 @@ test('Performance (b): no line without history or for bodyweight, assisted and t
   await H.logSet(page);
   await H.logSet(page);
   await page.waitForSelector('[data-dock=complete] [data-perf]');
-  // Against A03's last time (8 Nov, last set 16 × 9 at RIR 1: 21.33), not A01's: 14 × 1.5 = 21.0, 98 %.
-  assert.deepEqual(await perfInfo(page), { text: 'e1RM 21.0 · 98% of last time', band: 'same', color: MUTED });
+  // Against A03's last time (8 Nov, last set 16 × 9 at RIR 1: 21.33), not A01's (55.25).  Today's set is the pre-fill,
+  // A03's last set (rule 1 since 1.2.1): 16 × 9 at the default RIR 3 = 16 × 1.4 = 22.4, 105 %.
+  assert.deepEqual(await perfInfo(page), { text: 'e1RM 22.4 · 105% of last time', band: 'up', color: VIOLET });
   // Assisted, bodyweight (timed) and a kettlebell carry (timed, added): no line.
   for (const pos of [3, 4]) {
     await H.goSlot(page, pos);
